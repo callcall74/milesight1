@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ingest, logRaw } from "@/lib/parking";
+import { env } from "@/lib/env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function authorized(req: NextRequest): boolean {
-  const user = process.env.INGEST_USER;
-  const pass = process.env.INGEST_PASSWORD;
-  const token = process.env.INGEST_TOKEN;
+  const user = env("INGEST_USER");
+  const pass = env("INGEST_PASSWORD");
+  const token = env("INGEST_TOKEN");
   if (!user && !pass && !token) return true;
 
   if (token && req.nextUrl.searchParams.get("key") === token) return true;
@@ -15,7 +16,7 @@ function authorized(req: NextRequest): boolean {
     const h = req.headers.get("authorization") ?? "";
     if (h.startsWith("Basic ")) {
       const [u, ...rest] = Buffer.from(h.slice(6), "base64").toString().split(":");
-      if (u === (user ?? "") && rest.join(":") === (pass ?? "")) return true;
+      if (u === user && rest.join(":") === pass) return true;
     }
   }
   return false;

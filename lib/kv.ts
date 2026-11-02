@@ -1,4 +1,5 @@
 import { Redis } from "@upstash/redis";
+import { clean } from "./env";
 
 // Upstash Redis 의 일부 명령만 쓰는 얇은 래퍼.
 // 환경변수가 없으면 로컬 개발용 메모리 저장소로 동작한다.
@@ -100,9 +101,6 @@ function memoryKV(): KV {
 }
 
 let instance: KV | undefined;
-
-// .env 줄을 통째로 붙여넣어 값에 따옴표/공백이 섞인 경우를 정리
-const clean = (v?: string) => (v ?? "").trim().replace(/^["']|["']$/g, "").trim();
 
 function credentials() {
   const url = clean(process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL);
