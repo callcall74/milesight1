@@ -1,0 +1,284 @@
+import { kv } from "./kv";
+
+const MAX_EVENTS = 300;
+const MAX_RAW = 20;
+const SNAPSHOT_TTL = Math.round(Number(process.env.SNAPSHOT_TTL_HOURS || 24) * 3600);
+
+export type Box = { x1: number; y1: number; x2: number; y2: number };
+
+export type Spot = {
+  key: string;
+  area: string;
+  index: string;
+  occupied: boolean | null;
+  occupancy: string; // 카메라가 보낸 원본 값
+  duration: string;
+  since: string; // 서버 수신 시각 (ISO)
+  cameraTime: string;
+  snapId?: string;
+  box?: Box;
+  res?: { w: number; h: number };
+};
+
+export type ParkingEvent = {
+  id: string;
+  reportType: string;
+  eventType: string;
+  deviceId: string;
+  deviceName: string;
+  area?: string;
+  index?: string;
+  occupancy?: string;
+  occupied?: boolean | null;
+  duration?: string;
+  cameraTime: string;
+  receivedAt: string;
+  snapId?: string;
+  box?: Box;
+  res?: { w: number; h: number };
+  totalOccupied?: number;
+  totalAvailable?: number;
+};
+
+export type AreaDetail = { area_name: string; numbering_scheme: string; occupancy: string };
+
+export type Device = {
+  id: string;
+  deviceName: string;
+  mac: string;
+  sn: string;
+  lastSeen: string;
+  lastCameraTime: string;
+  totalOccupied: number | null;
+  totalAvailable: number | null;
+  lastIntervalAt: string;
+  areas: AreaDetail[];
+  intervalSnapId?: string;
+  spots: Spot[];
+  alarms: Spot[];
+};
+
+type Payload = Record<string, unknown>;
+
+const s = (v: unknown) => (v === undefined || v === null ? "" : String(v));
+const num = (v: unknown) => {
+  const n = Number(v);
+  return v === "" || v === undefined || v === null || Number.isNaN(n) ? null : n;
+};
+
+export function parseOccupied(v: unknown): boolean | null {
+  const t = s(v).trim().toLowerCase();
+  if (["1", "true", "occupied", "occupy", "parked", "yes", "on"].includes(t)) return true;
+  if (["0", "false", "vacant", "available", "free", "empty", "no", "off", "unoccupied", "idle"].includes(t))
+    return false;
+  return null;
+}
+
+function parseBox(p: Payload): Box | undefined {
+  const x1 = num(p.vehicle_tracking_box_x1);
+  const y1 = num(p.vehicle_tracking_box_y1);
+  const x2 = num(p.vehicle_tracking_box_x2);
+  const y2 = num(p.vehicle_tracking_box_y2);
+  if (x1 === null || y1 === null || x2 === null || y2 === null) return undefined;
+  if (x1 === 0 && y1 === 0 && x2 === 0 && y2 === 0) return undefined;
+  return { x1, y1, x2, y2 };
+}
+
+function parseRes(p: Payload) {
+  const w = num(p.resolution_w);
+  const h = num(p.resolution_h);
+  return w && h ? { w, h } : undefined;
+}
+
+function parseAreas(v: unknown): AreaDetail[] {
+  let arr = v;
+  if (typeof v === "string") {
+    try {
+      arr = JSON.parse(v);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr.map((a: Payload) => ({
+    area_name: s(a?.area_name),
+    numbering_scheme: s(a?.numbering_scheme),
+    occupancy: s(a?.occupancy),
+  }));
+}
+
+const newId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+/** base64 스냅샷을 저장하고 id 를 돌려준다. 비어있으면 undefined */
+async function saveSnapshot(raw: unknown): Promise<string | undefined> {
+  let b64 = s(raw).trim();
+  if (!b64 || b64.startsWith("$")) return undefined;
+  const comma = b64.indexOf(",");
+  if (b64.startsWith("data:") && comma > 0) b64 = b64.slice(comma + 1);
+  b64 = b64.replace(/\s+/g, "");
+  if (b64.length < 100) return undefined;
+  const id = newId();
+  await kv().set(`snap:${id}`, b64, SNAPSHOT_TTL);
+  return id;
+}
+
+export async function getSnapshot(id: string): Promise<{ data: Buffer; type: string } | null> {
+  if (!/^[a-z0-9-]+$/.test(id)) return null;
+  const b64 = await kv().get(`snap:${id}`);
+  if (!b64) return null;
+  const type = b64.startsWith("iVBOR") ? "image/png" : b64.startsWith("R0lGOD") ? "image/gif" : "image/jpeg";
+  return { data: Buffer.from(b64, "base64"), type };
+}
+
+/** 디버깅용: 스냅샷을 잘라낸 원본 payload 를 기록 */
+export async function logRaw(contentType: string, body: string, parsed: Payload | null) {
+  let preview: unknown;
+  if (parsed) {
+    const copy: Payload = { ...parsed };
+    if (typeof copy.full_snapshot === "string" && copy.full_snapshot.length > 80)
+      copy.full_snapshot = `<${copy.full_snapshot.length} chars: ${copy.full_snapshot.slice(0, 40)}...>`;
+    preview = copy;
+  } else {
+    preview = body.slice(0, 2000);
+  }
+  await kv().lpushTrim(
+    "raw",
+    JSON.stringify({ receivedAt: new Date().toISOString(), contentType, size: body.length, body: preview }),
+    MAX_RAW
+  );
+}
+
+export async function ingest(p: Payload): Promise<ParkingEvent> {
+  const store = kv();
+  const now = new Date().toISOString();
+  const deviceId = s(p.sn) || s(p.mac_address) || s(p.device_name) || "unknown";
+  const reportType = s(p.report_type) || "unknown";
+  const snapId = await saveSnapshot(p.full_snapshot);
+
+  const device: Record<string, string> = {
+    deviceName: s(p.device_name),
+    mac: s(p.mac_address),
+    sn: s(p.sn),
+    lastSeen: now,
+    lastCameraTime: s(p.time),
+  };
+
+  const ev: ParkingEvent = {
+    id: newId(),
+    reportType,
+    eventType: s(p.event_type),
+    deviceId,
+    deviceName: s(p.device_name),
+    cameraTime: s(p.time),
+    receivedAt: now,
+    snapId,
+  };
+
+  if (reportType === "interval") {
+    const occ = num(p.total_occupied);
+    const avail = num(p.total_available);
+    device.totalOccupied = occ === null ? "" : String(occ);
+    device.totalAvailable = avail === null ? "" : String(avail);
+    device.lastIntervalAt = now;
+    device.areas = JSON.stringify(parseAreas(p.parking_detail));
+    if (snapId) device.intervalSnapId = snapId;
+    ev.totalOccupied = occ ?? undefined;
+    ev.totalAvailable = avail ?? undefined;
+  } else if (reportType === "trigger" || reportType === "alarm") {
+    const area = s(p.parking_area);
+    const index = s(p.index_number);
+    const key = `${area}#${index}`;
+    const box = parseBox(p);
+    const res = parseRes(p);
+    Object.assign(ev, { area, index, duration: s(p.duration), box, res });
+
+    if (reportType === "trigger") {
+      const occupied = parseOccupied(p.occupancy);
+      ev.occupancy = s(p.occupancy);
+      ev.occupied = occupied;
+      const spot: Spot = {
+        key,
+        area,
+        index,
+        occupied,
+        occupancy: s(p.occupancy),
+        duration: s(p.duration),
+        since: now,
+        cameraTime: s(p.time),
+        snapId,
+        box,
+        res,
+      };
+      await store.hset(`spots:${deviceId}`, { [key]: JSON.stringify(spot) });
+      // 차가 빠지면 장기주차 알람 해제
+      if (occupied === false) await store.hdel(`alarms:${deviceId}`, key);
+    } else {
+      const alarm: Spot = {
+        key,
+        area,
+        index,
+        occupied: true,
+        occupancy: "",
+        duration: s(p.duration),
+        since: now,
+        cameraTime: s(p.time),
+        snapId,
+        box,
+        res,
+      };
+      await store.hset(`alarms:${deviceId}`, { [key]: JSON.stringify(alarm) });
+    }
+  }
+
+  await store.sadd("devices", deviceId);
+  await store.hset(`dev:${deviceId}`, device);
+  await store.lpushTrim("events", JSON.stringify(ev), MAX_EVENTS);
+  return ev;
+}
+
+const parseList = <T,>(rows: string[]): T[] =>
+  rows.flatMap((r) => {
+    try {
+      return [typeof r === "string" ? JSON.parse(r) : r];
+    } catch {
+      return [];
+    }
+  });
+
+const bySpot = (a: Spot, b: Spot) =>
+  a.area.localeCompare(b.area) || a.index.localeCompare(b.index, undefined, { numeric: true });
+
+export async function getStatus(eventLimit = 100) {
+  const store = kv();
+  const ids = await store.smembers("devices");
+  const devices: Device[] = await Promise.all(
+    ids.map(async (id) => {
+      const [d, spots, alarms] = await Promise.all([
+        store.hgetall(`dev:${id}`),
+        store.hgetall(`spots:${id}`),
+        store.hgetall(`alarms:${id}`),
+      ]);
+      return {
+        id,
+        deviceName: d.deviceName ?? "",
+        mac: d.mac ?? "",
+        sn: d.sn ?? "",
+        lastSeen: d.lastSeen ?? "",
+        lastCameraTime: d.lastCameraTime ?? "",
+        totalOccupied: num(d.totalOccupied),
+        totalAvailable: num(d.totalAvailable),
+        lastIntervalAt: d.lastIntervalAt ?? "",
+        areas: d.areas ? parseList<AreaDetail[]>([d.areas])[0] ?? [] : [],
+        intervalSnapId: d.intervalSnapId || undefined,
+        spots: parseList<Spot>(Object.values(spots)).sort(bySpot),
+        alarms: parseList<Spot>(Object.values(alarms)).sort(bySpot),
+      };
+    })
+  );
+  devices.sort((a, b) => a.deviceName.localeCompare(b.deviceName));
+  const [events, raw] = await Promise.all([
+    store.lrange("events", 0, eventLimit - 1),
+    store.lrange("raw", 0, MAX_RAW - 1),
+  ]);
+  return { devices, events: parseList<ParkingEvent>(events), raw: parseList<unknown>(raw) };
+}

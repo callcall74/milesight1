@@ -1,0 +1,64 @@
+
+
+
+<Interval Report>
+{
+    "event_type": "$event_type$",
+    "device_name": "$device_name$",
+    "mac_address": "$mac_address$",
+    "sn": "$sn$",
+    "time": "$time$",
+    "report_type": "interval",
+    "total_occupied": "$total_occupied$",
+    "total_available": "$total_available$",
+    "parking_detail": [
+        {
+            "area_name": "$area_name$",
+            "numbering_scheme": "$numbering_scheme$",
+            "occupancy": "$occupancy$"
+        }
+    ],
+    "full_snapshot": "$full_snapshot$"
+}
+
+
+<Trigger Report>
+{
+    "event_type": "$event_type$",
+    "device_name": "$device_name$",
+    "mac_address": "$mac_address$",
+    "sn": "$sn$",
+    "time": "$time$",
+    "report_type": "trigger",
+    "resolution_w": "$resolution_w$",
+    "resolution_h": "$resolution_h$",
+    "parking_area": "$parking_area$",
+    "index_number": "$index_number$",
+    "occupancy": "$occupancy$",
+    "duration": "$duration$",
+    "vehicle_tracking_box_x1": "$vehicle_tracking_box_x1$",
+    "vehicle_tracking_box_y1": "$vehicle_tracking_box_y1$",
+    "vehicle_tracking_box_x2": "$vehicle_tracking_box_x2$",
+    "vehicle_tracking_box_y2": "$vehicle_tracking_box_y2$",
+    "full_snapshot": "$full_snapshot$"
+}
+
+<Timeout Report>
+{
+    "event_type": "$event_type$",
+    "device_name": "$device_name$",
+    "mac_address": "$mac_address$",
+    "sn": "$sn$",
+    "time": "$time$",
+    "report_type": "alarm",
+    "resolution_w": "$resolution_w$",
+    "resolution_h": "$resolution_h$",
+    "parking_area": "$parking_area$",
+    "index_number": "$index_number$",
+    "duration": "$duration$",
+    "vehicle_tracking_box_x1": "$vehicle_tracking_box_x1$",
+    "vehicle_tracking_box_y1": "$vehicle_tracking_box_y1$",
+    "vehicle_tracking_box_x2": "$vehicle_tracking_box_x2$",
+    "vehicle_tracking_box_y2": "$vehicle_tracking_box_y2$",
+    "full_snapshot": "$full_snapshot$"
+}
