@@ -60,7 +60,12 @@ export type Device = {
 
 type Payload = Record<string, unknown>;
 
-const s = (v: unknown) => (v === undefined || v === null ? "" : String(v));
+// 카메라가 채우지 못한 템플릿 변수("$space_id$" 등)는 빈 값으로 취급
+const s = (v: unknown) => {
+  if (v === undefined || v === null) return "";
+  const t = String(v);
+  return /^\$[a-z0-9_]+\$$/i.test(t) ? "" : t;
+};
 const num = (v: unknown) => {
   const n = Number(v);
   return v === "" || v === undefined || v === null || Number.isNaN(n) ? null : n;
@@ -185,8 +190,9 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
     ev.totalOccupied = occ ?? undefined;
     ev.totalAvailable = avail ?? undefined;
   } else if (reportType === "trigger" || reportType === "alarm") {
-    const area = s(p.parking_area);
-    const index = s(p.index_number);
+    // Parking Management: parking_area/index_number, Occupancy Detection: space_name/space_id
+    const area = s(p.parking_area) || s(p.space_name);
+    const index = s(p.index_number) || s(p.space_id);
     const key = `${area}#${index}`;
     const box = parseBox(p);
     const res = parseRes(p);
