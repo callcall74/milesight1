@@ -114,15 +114,16 @@ function parseAreas(v: unknown): AreaDetail[] {
 
 const newId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-/** base64 스냅샷을 저장하고 id 를 돌려준다. 비어있으면 undefined */
-async function saveSnapshot(raw: unknown): Promise<string | undefined> {
+/** base64 스냅샷을 저장하고 id 를 돌려준다. 비어있으면 undefined.
+ *  fixedId 를 주면 같은 키에 덮어써서 용량이 늘지 않는다 (주기 리포트용) */
+async function saveSnapshot(raw: unknown, fixedId?: string): Promise<string | undefined> {
   let b64 = s(raw).trim();
   if (!b64 || b64.startsWith("$")) return undefined;
   const comma = b64.indexOf(",");
   if (b64.startsWith("data:") && comma > 0) b64 = b64.slice(comma + 1);
   b64 = b64.replace(/\s+/g, "");
   if (b64.length < 100) return undefined;
-  const id = newId();
+  const id = fixedId ?? newId();
   await kv().set(`snap:${id}`, b64, SNAPSHOT_TTL);
   return id;
 }
@@ -158,7 +159,10 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
   const now = new Date().toISOString();
   const deviceId = s(p.sn) || s(p.mac_address) || s(p.device_name) || "unknown";
   const reportType = s(p.report_type) || "unknown";
-  const snapId = await saveSnapshot(p.full_snapshot);
+  const snapId = await saveSnapshot(
+    p.full_snapshot,
+    reportType === "interval" ? `latest-${deviceId.toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : undefined
+  );
 
   const device: Record<string, string> = {
     deviceName: s(p.device_name),

@@ -13,7 +13,8 @@ type Status = {
 
 type SnapView = { snapId: string; box?: Box; res?: { w: number; h: number }; title: string };
 
-const POLL_MS = 5000;
+// Upstash 무료 플랜 명령 수(월 50만)를 아끼기 위해 15초 간격, 탭이 숨겨지면 멈춤
+const POLL_MS = 15000;
 
 function fmt(iso: string) {
   if (!iso) return "-";
@@ -58,8 +59,15 @@ export default function Dashboard() {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, POLL_MS);
-    return () => clearInterval(t);
+    const t = setInterval(() => {
+      if (!document.hidden) load();
+    }, POLL_MS);
+    const onVisible = () => !document.hidden && load();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [load]);
 
   const openSnap = (v: { snapId?: string; box?: Box; res?: { w: number; h: number } }, title: string) =>
