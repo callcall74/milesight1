@@ -101,17 +101,23 @@ function memoryKV(): KV {
 
 let instance: KV | undefined;
 
+// .env 줄을 통째로 붙여넣어 값에 따옴표/공백이 섞인 경우를 정리
+const clean = (v?: string) => (v ?? "").trim().replace(/^["']|["']$/g, "").trim();
+
+function credentials() {
+  const url = clean(process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL);
+  const token = clean(process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN);
+  return { url, token };
+}
+
 export function kv(): KV {
   if (instance) return instance;
-  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+  const { url, token } = credentials();
   instance = url && token ? upstashKV(url, token) : memoryKV();
   return instance;
 }
 
 export function usingMemoryStore(): boolean {
-  return !(
-    (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL) &&
-    (process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN)
-  );
+  const { url, token } = credentials();
+  return !(url && token);
 }
