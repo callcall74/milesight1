@@ -69,7 +69,7 @@ h3 { font-size: 14px; margin: 16px 0 8px; color: var(--muted); font-weight: 600;
 .spot.alarm { box-shadow: 0 0 0 2px var(--warn); }
 .spot .no { font-weight: 700; font-size: 16px; }
 .spot .st { font-size: 12px; margin-top: 2px; }
-.spot.unknown { border-style: dashed; color: var(--muted); }
+.spot.unknown { border-style: dashed; }
 .spot-row { display: flex; gap: 10px; align-items: stretch; margin-bottom: 8px; }
 .spot-area { flex: 0 0 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px; border-radius: 8px; background: var(--line); }
 .spot-row .spots { flex: 1; }

@@ -283,9 +283,9 @@ function DeviceCard({
                 {g.spots.map((s) => {
                   if (!s.since)
                     return (
-                      <div key={s.key} className="spot unknown" title="아직 변화 리포트가 오지 않은 면">
+                      <div key={s.key} className="spot free unknown" title="아직 변화 리포트가 없어 빈자리로 추정 중">
                         <div className="no">{s.index}</div>
-                        <div className="st">미확인</div>
+                        <div className="st">빈자리(확인중)</div>
                       </div>
                     );
                   const cls = s.occupied === true ? "busy" : s.occupied === false ? "free" : "";
@@ -373,7 +373,7 @@ function splitList(v: string): string[] {
 /** 구역별 한 줄씩. 면 상태는 변화 리포트로만 판단한다.
  *  (Occupancy Detection 모드의 주기 리포트는 occupancy 가 항상 0 이라 신뢰할 수 없음)
  *  주기 리포트의 구역/번호 체계는 현재 카메라 설정으로 보고, 거기 없는 예전 면은 숨기고
- *  아직 변화 리포트가 없는 면은 "미확인"(since 비어있음) 으로 채운다. */
+ *  아직 변화 리포트가 없는 면은 "빈자리(확인중)"(since 비어있음) 으로 채운다. */
 function buildSpotGroups(d: Device): SpotGroup[] {
   const areas = new Map<string, Spot[]>();
   const configured = new Map(d.areas.map((a) => [a.area_name, splitList(a.numbering_scheme)]));
@@ -406,7 +406,8 @@ function buildAreaStats(groups: SpotGroup[]): AreaStat[] {
     name: g.area || "?",
     total: g.spots.length,
     occupied: g.spots.filter((s) => s.occupied === true).length,
-    free: g.spots.filter((s) => s.occupied === false).length,
+    // 변화 리포트가 아직 없는 면(확인중)은 빈자리로 집계
+    free: g.spots.filter((s) => s.occupied !== true).length,
   }));
 }
 
