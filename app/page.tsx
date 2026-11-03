@@ -39,6 +39,34 @@ function occLabel(o: boolean | null | undefined, raw?: string) {
 
 const TYPE_LABEL: Record<string, string> = { interval: "주기", trigger: "변화", alarm: "장기주차" };
 
+// 서버의 DEBOUNCE_SEC 과 같은 값: 이 시간 안에 원래 상태로 되돌아간 변화는 깜빡임으로 보고 목록에서 숨김
+const DEBOUNCE_MS = 30_000;
+
+/** 같은 면에서 A→B→A 가 DEBOUNCE_MS 안에 일어나면 B 와 되돌아온 A 이벤트를 숨긴다 */
+function hideFlicker(events: ParkingEvent[]): ParkingEvent[] {
+  const hidden = new Set<string>();
+  const bySpot = new Map<string, ParkingEvent[]>();
+  for (const e of events) {
+    if (e.reportType !== "trigger" || typeof e.occupied !== "boolean") continue;
+    const k = `${e.deviceId}|${e.area}#${e.index}`;
+    if (!bySpot.has(k)) bySpot.set(k, []);
+    bySpot.get(k)!.push(e);
+  }
+  for (const list of bySpot.values()) {
+    list.sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
+    for (let i = 1; i + 1 < list.length; i++) {
+      const [prev, cur, next] = [list[i - 1], list[i], list[i + 1]];
+      if (hidden.has(cur.id)) continue;
+      const back = cur.occupied !== prev.occupied && next.occupied === prev.occupied;
+      if (back && new Date(next.receivedAt).getTime() - new Date(cur.receivedAt).getTime() < DEBOUNCE_MS) {
+        hidden.add(cur.id);
+        hidden.add(next.id);
+      }
+    }
+  }
+  return events.filter((e) => !hidden.has(e.id));
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<Status | null>(null);
   const [error, setError] = useState("");
@@ -121,7 +149,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {data.events.map((e) => (
+                {hideFlicker(data.events).map((e) => (
                   <tr key={e.id}>
                     <td>{fmt(e.receivedAt)}</td>
                     <td>

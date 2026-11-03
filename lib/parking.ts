@@ -9,6 +9,8 @@ const SNAPSHOT_INTERVAL_SEC = Number(process.env.SNAPSHOT_INTERVAL_SEC || 300);
 // 점유(차 들어옴) 리포트는 면마다 사진을 따로 남기되, 같은 면은 이 간격(초)에 한 장까지
 const SPOT_SNAPSHOT_INTERVAL_SEC = Number(process.env.SPOT_SNAPSHOT_INTERVAL_SEC || 600);
 const SNAPSHOT_WIDTH = Number(process.env.SNAPSHOT_WIDTH || 1280);
+// 이 시간(초) 안에 원래 상태로 되돌아가는 변화(차 그림자, 사람 지나감 등으로 인한 깜빡임)는 무시
+const DEBOUNCE_SEC = Number(process.env.DEBOUNCE_SEC || 30);
 
 export type Box = { x1: number; y1: number; x2: number; y2: number };
 
@@ -24,6 +26,7 @@ export type Spot = {
   snapId?: string;
   snapAt?: string; // 이 면의 사진을 마지막으로 저장한 시각
   occSnapId?: string; // 이 면의 마지막 점유 사진
+  pending?: Spot; // 아직 DEBOUNCE_SEC 동안 유지되지 않은 새 상태 (확정 전)
   box?: Box;
   res?: { w: number; h: number };
 };
@@ -122,6 +125,14 @@ function parseAreas(v: unknown): AreaDetail[] {
   }));
 }
 
+/** 대기 중인 새 상태가 DEBOUNCE_SEC 이상 유지됐으면 확정 상태로 올린다 */
+export function settleSpot(spot: Spot, nowMs = Date.now()): Spot {
+  const p = spot.pending;
+  if (!p) return spot;
+  if ((nowMs - new Date(p.since).getTime()) / 1000 < DEBOUNCE_SEC) return spot;
+  return { ...p, pending: undefined };
+}
+
 const newId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 /** base64 스냅샷을 SNAPSHOT_WIDTH 폭 JPEG 로 줄여 저장하고 id 를 돌려준다. 비어있으면 undefined */
@@ -187,7 +198,7 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
   const key = `${area}#${index}`;
   let prevSpot: Spot | undefined;
   try {
-    prevSpot = prevSpots[key] ? (JSON.parse(prevSpots[key]) as Spot) : undefined;
+    prevSpot = prevSpots[key] ? settleSpot(JSON.parse(prevSpots[key]) as Spot) : undefined;
   } catch {}
 
   // 스냅샷 저장 조건
@@ -285,14 +296,25 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
         box,
         res,
       };
+      ev.snapId = spot.snapId; // 이벤트 목록의 "보기"도 같은 사진
       // 카메라는 리포트를 큐에 쌓아 순서대로 보내지만, 재전송 등으로 늦게 도착한 예전 리포트가
       // 최신 상태를 덮어쓰지 않도록 카메라 시각("YYYY-MM-DD HH:MM:SS")으로 비교
-      ev.snapId = spot.snapId; // 이벤트 목록의 "보기"도 같은 사진
-      const prevTime = prevSpot?.cameraTime ?? "";
+      const prevTime = prevSpot?.pending?.cameraTime || prevSpot?.cameraTime || "";
       if (!prevTime || !spot.cameraTime || spot.cameraTime >= prevTime) {
-        await store.hset(`spots:${deviceId}`, { [key]: JSON.stringify(spot) });
-        // 차가 빠지면 장기주차 알람 해제
-        if (occupied === false) await store.hdel(`alarms:${deviceId}`, key);
+        let next: Spot;
+        if (!prevSpot || prevSpot.occupied === null || occupied === null) {
+          next = spot; // 처음 알게 된 면은 바로 확정
+        } else if (occupied === prevSpot.occupied) {
+          // 확정 상태와 같음: 대기 중이던 변화는 DEBOUNCE_SEC 안에 되돌아온 깜빡임이므로 버림
+          next = { ...spot, since: prevSpot.since, pending: undefined };
+        } else {
+          // 상태가 바뀜: DEBOUNCE_SEC 동안 유지되면 확정 (같은 상태가 다시 와도 처음 바뀐 시각 유지)
+          const since = prevSpot.pending?.occupied === occupied ? prevSpot.pending.since : now;
+          next = { ...prevSpot, snapAt: spot.snapAt, occSnapId: spot.occSnapId, pending: { ...spot, since } };
+        }
+        await store.hset(`spots:${deviceId}`, { [key]: JSON.stringify(next) });
+        // 차가 빠진 것이 확정되면 장기주차 알람 해제 (대기 중인 빈자리는 화면에서 걸러냄)
+        if (next.occupied === false) await store.hdel(`alarms:${deviceId}`, key);
       }
     } else {
       const alarm: Spot = {
@@ -340,6 +362,12 @@ export async function getStatus(eventLimit = 100) {
         store.hgetall(`spots:${id}`),
         store.hgetall(`alarms:${id}`),
       ]);
+      const settled = parseList<Spot>(Object.values(spots))
+        .map((x) => {
+          const { pending: _pending, ...rest } = settleSpot(x);
+          return rest as Spot;
+        })
+        .sort(bySpot);
       return {
         id,
         deviceName: d.deviceName ?? "",
@@ -354,8 +382,11 @@ export async function getStatus(eventLimit = 100) {
         intervalSnapId: d.intervalSnapId || undefined,
         lastSnapId: d.lastSnapId || undefined,
         areaChangedAt: parseList<Record<string, string>>([d.areaChangedAt || "{}"])[0] ?? {},
-        spots: parseList<Spot>(Object.values(spots)).sort(bySpot),
-        alarms: parseList<Spot>(Object.values(alarms)).sort(bySpot),
+        spots: settled,
+        // 빈자리로 확정된 면의 장기주차 알림은 숨김
+        alarms: parseList<Spot>(Object.values(alarms))
+          .filter((a) => settled.find((x) => x.key === a.key)?.occupied !== false)
+          .sort(bySpot),
       };
     })
   );
