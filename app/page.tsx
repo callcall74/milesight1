@@ -189,6 +189,7 @@ function DeviceCard({
   const total = occupied !== null && available !== null ? occupied + available : null;
   const rate = total ? Math.round(((occupied ?? 0) / total) * 100) : null;
   const areaStats = buildAreaStats(d);
+  const spotGroups = buildSpotGroups(d);
 
   return (
     <section className="panel">
@@ -270,30 +271,41 @@ function DeviceCard({
         </>
       )}
 
-      {d.spots.length > 0 && (
+      {spotGroups.length > 0 && (
         <>
           <h3>주차면 상태 (변화 리포트 기준)</h3>
-          <div className="spots">
-            {d.spots.map((s) => {
-              const cls = s.occupied === true ? "busy" : s.occupied === false ? "free" : "";
-              return (
-                <button
-                  key={s.key}
-                  className={`spot ${cls} ${alarmKeys.has(s.key) ? "alarm" : ""}`}
-                  data-click={s.snapId ? "1" : "0"}
-                  onClick={() => openSnap(s, `${s.area} ${s.index}`)}
-                  title={`카메라 시각 ${s.cameraTime}`}
-                >
-                  <div className="muted small">{s.area}</div>
-                  <div className="no">{s.index}</div>
-                  <div className="st">
-                    {s.occupied === true ? "점유" : s.occupied === false ? "빈자리" : s.occupancy || "?"}
-                  </div>
-                  <div className="muted small">{ago(s.since, now)}</div>
-                </button>
-              );
-            })}
-          </div>
+          {spotGroups.map((g) => (
+            <div className="spot-row" key={g.area}>
+              <div className="spot-area">{g.area || "?"}</div>
+              <div className="spots">
+                {g.spots.map((s) => {
+                  if (!s.since)
+                    return (
+                      <div key={s.key} className="spot unknown" title="아직 변화 리포트가 오지 않은 면">
+                        <div className="no">{s.index}</div>
+                        <div className="st">미확인</div>
+                      </div>
+                    );
+                  const cls = s.occupied === true ? "busy" : s.occupied === false ? "free" : "";
+                  return (
+                    <button
+                      key={s.key}
+                      className={`spot ${cls} ${alarmKeys.has(s.key) ? "alarm" : ""}`}
+                      data-click={s.snapId ? "1" : "0"}
+                      onClick={() => openSnap(s, `${s.area} ${s.index}`)}
+                      title={`카메라 시각 ${s.cameraTime}`}
+                    >
+                      <div className="no">{s.index}</div>
+                      <div className="st">
+                        {s.occupied === true ? "점유" : s.occupied === false ? "빈자리" : s.occupancy || "?"}
+                      </div>
+                      <div className="muted small">{ago(s.since, now)}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </>
       )}
 
@@ -375,6 +387,44 @@ function buildAreaStats(d: Device): AreaStat[] {
       const free = ivTotal !== null && ivOcc !== null ? Math.max(0, ivTotal - ivOcc) : null;
       return { name, total: ivTotal, occupied: ivOcc, free };
     });
+}
+
+// "1-4" → ["1","2","3","4"], "1,3" → ["1","3"]
+function expandScheme(scheme: string): string[] {
+  const out: string[] = [];
+  for (const part of scheme.split(",")) {
+    const p = part.trim();
+    const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      const [a, b] = [Number(m[1]), Number(m[2])];
+      if (Math.abs(b - a) > 200) continue;
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) out.push(String(i));
+    } else if (p) out.push(p);
+  }
+  return out;
+}
+
+/** 구역별 한 줄씩. 주기 리포트의 번호 체계에는 있지만 변화 리포트가 아직 없는 면은 "미확인"(since 비어있음) 으로 채움 */
+function buildSpotGroups(d: Device): { area: string; spots: Spot[] }[] {
+  const areas = new Map<string, Spot[]>();
+  for (const s of d.spots) {
+    if (!areas.has(s.area)) areas.set(s.area, []);
+    areas.get(s.area)!.push(s);
+  }
+  for (const a of d.areas) {
+    const list = areas.get(a.area_name) ?? [];
+    for (const index of expandScheme(a.numbering_scheme)) {
+      if (!list.some((s) => s.index === index))
+        list.push({ key: `${a.area_name}#${index}`, area: a.area_name, index, occupied: null, occupancy: "", duration: "", since: "", cameraTime: "" });
+    }
+    areas.set(a.area_name, list);
+  }
+  return [...areas.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([area, spots]) => ({
+      area,
+      spots: spots.sort((x, y) => x.index.localeCompare(y.index, undefined, { numeric: true })),
+    }));
 }
 
 function sumOf(list: AreaStat[], k: "total" | "occupied" | "free") {
