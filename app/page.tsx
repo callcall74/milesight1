@@ -298,7 +298,10 @@ function DeviceCard({
                       onClick={() =>
                         s.snapId
                           ? openSnap(s, `${s.area} ${s.index}`)
-                          : openSnap({ snapId: d.lastSnapId }, `${s.area} ${s.index} (최근 전체 화면)`)
+                          : openSnap(
+                              { snapId: d.lastSnapId, box: s.box, res: s.res },
+                              `${s.area} ${s.index} (최근 전체 화면)`
+                            )
                       }
                       title={`카메라 시각 ${s.cameraTime}`}
                     >
