@@ -27,7 +27,13 @@ function upstashKV(url: string, token: string): KV {
       await r.hset(k, values);
     },
     async hgetall(k) {
-      return ((await r.hgetall(k)) as Record<string, string> | null) ?? {};
+      // automaticDeserialization:false 이면 [field, value, field, value, ...] 배열로 올 수 있음
+      const res = (await r.hgetall(k)) as Record<string, string> | string[] | null;
+      if (!res) return {};
+      if (!Array.isArray(res)) return res;
+      const out: Record<string, string> = {};
+      for (let i = 0; i + 1 < res.length; i += 2) out[res[i]] = res[i + 1];
+      return out;
     },
     async hdel(k, f) {
       await r.hdel(k, f);
