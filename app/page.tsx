@@ -181,15 +181,14 @@ function DeviceCard({
   openSnap: (v: Spot | { snapId?: string }, title: string) => void;
 }) {
   const alarmKeys = new Set(d.alarms.map((a) => a.key));
-  const spotOcc = d.spots.filter((s) => s.occupied === true).length;
-  const spotFree = d.spots.filter((s) => s.occupied === false).length;
-  // interval 리포트 총계를 우선, 없으면 trigger 로 모은 개별 상태로 계산
-  const occupied = d.totalOccupied ?? (d.spots.length ? spotOcc : null);
-  const available = d.totalAvailable ?? (d.spots.length ? spotFree : null);
+  const spotGroups = buildSpotGroups(d);
+  const areaStats = buildAreaStats(spotGroups);
+  // 면별 상태(주기 + 이후 변화 리포트)로 계산, 면 정보가 없으면 주기 리포트 총계
+  const known = areaStats.some((a) => a.total);
+  const occupied = known ? (sumOf(areaStats, "occupied") as number) : d.totalOccupied;
+  const available = known ? (sumOf(areaStats, "free") as number) : d.totalAvailable;
   const total = occupied !== null && available !== null ? occupied + available : null;
   const rate = total ? Math.round(((occupied ?? 0) / total) * 100) : null;
-  const areaStats = buildAreaStats(d);
-  const spotGroups = buildSpotGroups(d);
 
   return (
     <section className="panel">
@@ -273,7 +272,7 @@ function DeviceCard({
 
       {spotGroups.length > 0 && (
         <>
-          <h3>주차면 상태 (변화 리포트 기준)</h3>
+          <h3>주차면 상태</h3>
           {spotGroups.map((g) => (
             <div className="spot-row" key={g.area}>
               <div className="spot-area">{g.area || "?"}</div>
@@ -351,48 +350,12 @@ function DeviceCard({
 }
 
 type AreaStat = { name: string; total: number | null; occupied: number | null; free: number | null };
+type SpotGroup = { area: string; spots: Spot[] };
 
-// "1-10" → 10, "1,2,5" → 3, "4" → 1
-function countScheme(scheme: string): number | null {
-  const t = scheme.trim();
-  if (!t) return null;
-  let n = 0;
-  for (const part of t.split(",")) {
-    const m = part.trim().match(/^(\d+)\s*-\s*(\d+)$/);
-    if (m) n += Math.abs(Number(m[2]) - Number(m[1])) + 1;
-    else if (part.trim()) n += 1;
-  }
-  return n || null;
-}
-
-/** 구역별 전체/점유/빈자리. 변화 리포트로 모든 면을 알고 있으면 그것(실시간)을, 아니면 주기 리포트 값을 사용 */
-function buildAreaStats(d: Device): AreaStat[] {
-  const names: string[] = [];
-  const add = (n: string) => n && !names.includes(n) && names.push(n);
-  d.areas.forEach((a) => add(a.area_name));
-  d.spots.forEach((s) => add(s.area));
-
-  return names
-    .sort((a, b) => a.localeCompare(b))
-    .map((name) => {
-      const iv = d.areas.find((a) => a.area_name === name);
-      const ivTotal = iv ? countScheme(iv.numbering_scheme) : null;
-      const ivOcc = iv && iv.occupancy !== "" && !Number.isNaN(Number(iv.occupancy)) ? Number(iv.occupancy) : null;
-      const spots = d.spots.filter((s) => s.area === name);
-      if (spots.length && (ivTotal === null || spots.length >= ivTotal)) {
-        const occupied = spots.filter((s) => s.occupied === true).length;
-        const free = spots.filter((s) => s.occupied === false).length;
-        return { name, total: spots.length, occupied, free };
-      }
-      const free = ivTotal !== null && ivOcc !== null ? Math.max(0, ivTotal - ivOcc) : null;
-      return { name, total: ivTotal, occupied: ivOcc, free };
-    });
-}
-
-// "1-4" → ["1","2","3","4"], "1,3" → ["1","3"]
-function expandScheme(scheme: string): string[] {
+// "[1,2]" / "1,2" → ["1","2"], "1-4" → ["1","2","3","4"]
+function splitList(v: string): string[] {
   const out: string[] = [];
-  for (const part of scheme.split(",")) {
+  for (const part of v.replace(/[[\]"']/g, "").split(",")) {
     const p = part.trim();
     const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
     if (m) {
@@ -404,19 +367,39 @@ function expandScheme(scheme: string): string[] {
   return out;
 }
 
-/** 구역별 한 줄씩. 주기 리포트의 번호 체계에는 있지만 변화 리포트가 아직 없는 면은 "미확인"(since 비어있음) 으로 채움 */
-function buildSpotGroups(d: Device): { area: string; spots: Spot[] }[] {
+const occOf = (v?: string): boolean | null => (v === "1" ? true : v === "0" ? false : null);
+
+/** 구역별 한 줄씩. 주기 리포트(번호 체계 + 면별 점유 배열)를 기본으로,
+ *  그보다 나중에 온 변화 리포트가 있으면 그 값을 사용. 둘 다 없으면 "미확인"(since 비어있음) */
+function buildSpotGroups(d: Device): SpotGroup[] {
   const areas = new Map<string, Spot[]>();
-  for (const s of d.spots) {
+  // 구역/번호가 모두 비어 있는 예전 데이터("#")는 제외
+  for (const s of d.spots.filter((s) => s.area || s.index)) {
     if (!areas.has(s.area)) areas.set(s.area, []);
     areas.get(s.area)!.push(s);
   }
   for (const a of d.areas) {
     const list = areas.get(a.area_name) ?? [];
-    for (const index of expandScheme(a.numbering_scheme)) {
-      if (!list.some((s) => s.index === index))
-        list.push({ key: `${a.area_name}#${index}`, area: a.area_name, index, occupied: null, occupancy: "", duration: "", since: "", cameraTime: "" });
-    }
+    const occ = splitList(a.occupancy);
+    const indexes = splitList(a.numbering_scheme);
+    indexes.forEach((index, i) => {
+      // occupancy 가 면별 배열("[0,1]")일 때만 면 상태로 사용 (예전 형식은 구역 점유 수)
+      const occupied = occ.length === indexes.length ? occOf(occ[i]) : null;
+      const fromInterval: Spot = {
+        key: `${a.area_name}#${index}`,
+        area: a.area_name,
+        index,
+        occupied,
+        occupancy: occupied === null ? "" : occ[i],
+        duration: "",
+        since: occupied === null ? "" : d.lastIntervalAt,
+        cameraTime: "",
+        snapId: d.intervalSnapId,
+      };
+      const j = list.findIndex((s) => s.index === index);
+      if (j < 0) list.push(fromInterval);
+      else if (fromInterval.occupied !== null && list[j].since < d.lastIntervalAt) list[j] = fromInterval;
+    });
     areas.set(a.area_name, list);
   }
   return [...areas.entries()]
@@ -425,6 +408,15 @@ function buildSpotGroups(d: Device): { area: string; spots: Spot[] }[] {
       area,
       spots: spots.sort((x, y) => x.index.localeCompare(y.index, undefined, { numeric: true })),
     }));
+}
+
+function buildAreaStats(groups: SpotGroup[]): AreaStat[] {
+  return groups.map((g) => ({
+    name: g.area || "?",
+    total: g.spots.length,
+    occupied: g.spots.filter((s) => s.occupied === true).length,
+    free: g.spots.filter((s) => s.occupied === false).length,
+  }));
 }
 
 function sumOf(list: AreaStat[], k: "total" | "occupied" | "free") {
