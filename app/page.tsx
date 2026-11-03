@@ -188,6 +188,7 @@ function DeviceCard({
   const available = d.totalAvailable ?? (d.spots.length ? spotFree : null);
   const total = occupied !== null && available !== null ? occupied + available : null;
   const rate = total ? Math.round(((occupied ?? 0) / total) * 100) : null;
+  const areaStats = buildAreaStats(d);
 
   return (
     <section className="panel">
@@ -235,24 +236,32 @@ function DeviceCard({
         )}
       </p>
 
-      {d.areas.length > 0 && (
+      {areaStats.length > 0 && (
         <>
-          <h3>구역별 현황 (주기 리포트)</h3>
+          <h3>구역별 현황</h3>
           <div className="table-wrap">
-            <table>
+            <table className="area-table">
               <thead>
                 <tr>
-                  <th>구역</th>
-                  <th>번호 체계</th>
-                  <th>점유</th>
+                  <th>구분</th>
+                  <th>전체</th>
+                  <th className="busy">점유</th>
+                  <th className="free">빈자리</th>
                 </tr>
               </thead>
               <tbody>
-                {d.areas.map((a, i) => (
-                  <tr key={i}>
-                    <td>{a.area_name}</td>
-                    <td>{a.numbering_scheme}</td>
-                    <td>{a.occupancy}</td>
+                <tr className="sum">
+                  <th>합계</th>
+                  <td>{sumOf(areaStats, "total")}</td>
+                  <td className="busy">{sumOf(areaStats, "occupied")}</td>
+                  <td className="free">{sumOf(areaStats, "free")}</td>
+                </tr>
+                {areaStats.map((a) => (
+                  <tr key={a.name}>
+                    <th>{a.name}</th>
+                    <td>{a.total ?? "-"}</td>
+                    <td className="busy">{a.occupied ?? "-"}</td>
+                    <td className="free">{a.free ?? "-"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -327,6 +336,50 @@ function DeviceCard({
       )}
     </section>
   );
+}
+
+type AreaStat = { name: string; total: number | null; occupied: number | null; free: number | null };
+
+// "1-10" → 10, "1,2,5" → 3, "4" → 1
+function countScheme(scheme: string): number | null {
+  const t = scheme.trim();
+  if (!t) return null;
+  let n = 0;
+  for (const part of t.split(",")) {
+    const m = part.trim().match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) n += Math.abs(Number(m[2]) - Number(m[1])) + 1;
+    else if (part.trim()) n += 1;
+  }
+  return n || null;
+}
+
+/** 구역별 전체/점유/빈자리. 변화 리포트로 모든 면을 알고 있으면 그것(실시간)을, 아니면 주기 리포트 값을 사용 */
+function buildAreaStats(d: Device): AreaStat[] {
+  const names: string[] = [];
+  const add = (n: string) => n && !names.includes(n) && names.push(n);
+  d.areas.forEach((a) => add(a.area_name));
+  d.spots.forEach((s) => add(s.area));
+
+  return names
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => {
+      const iv = d.areas.find((a) => a.area_name === name);
+      const ivTotal = iv ? countScheme(iv.numbering_scheme) : null;
+      const ivOcc = iv && iv.occupancy !== "" && !Number.isNaN(Number(iv.occupancy)) ? Number(iv.occupancy) : null;
+      const spots = d.spots.filter((s) => s.area === name);
+      if (spots.length && (ivTotal === null || spots.length >= ivTotal)) {
+        const occupied = spots.filter((s) => s.occupied === true).length;
+        const free = spots.filter((s) => s.occupied === false).length;
+        return { name, total: spots.length, occupied, free };
+      }
+      const free = ivTotal !== null && ivOcc !== null ? Math.max(0, ivTotal - ivOcc) : null;
+      return { name, total: ivTotal, occupied: ivOcc, free };
+    });
+}
+
+function sumOf(list: AreaStat[], k: "total" | "occupied" | "free") {
+  const vals = list.map((a) => a[k]).filter((v): v is number => v !== null);
+  return vals.length ? vals.reduce((x, y) => x + y, 0) : "-";
 }
 
 function SnapshotModal({ v, onClose }: { v: SnapView; onClose: () => void }) {

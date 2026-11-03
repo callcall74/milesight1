@@ -73,6 +73,11 @@ h3 { font-size: 14px; margin: 16px 0 8px; color: var(--muted); font-weight: 600;
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: 600; font-size: 12px; }
+.area-table th, .area-table td { text-align: center; }
+.area-table td { font-size: 18px; font-weight: 600; }
+.area-table td.busy, .area-table th.busy { color: var(--busy); }
+.area-table td.free, .area-table th.free { color: var(--free); }
+.area-table tr.sum th, .area-table tr.sum td { border-bottom: 2px solid var(--line); }
 .table-wrap { overflow-x: auto; }
 
 .tag { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
