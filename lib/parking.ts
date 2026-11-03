@@ -54,6 +54,7 @@ export type Device = {
   lastIntervalAt: string;
   areas: AreaDetail[];
   intervalSnapId?: string;
+  areaChangedAt: Record<string, string>; // 구역 → 번호 체계가 바뀐 시각
   spots: Spot[];
   alarms: Spot[];
 };
@@ -190,6 +191,29 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
     device.totalAvailable = avail === null ? "" : String(avail);
     device.lastIntervalAt = now;
     device.areas = JSON.stringify(parseAreas(p.parking_detail));
+    // 구역별 번호 체계가 바뀌면(구역을 다시 그림) 그 시각을 남겨, 이전 변화 리포트는 화면에서 미확인 처리
+    const prevDev = await store.hgetall(`dev:${deviceId}`);
+    const schemes = (areas: string) => {
+      try {
+        return new Map((JSON.parse(areas) as AreaDetail[]).map((a) => [a.area_name, a.numbering_scheme]));
+      } catch {
+        return new Map<string, string>();
+      }
+    };
+    const before = schemes(prevDev.areas ?? "");
+    if (before.size) {
+      let changed: Record<string, string> = {};
+      try {
+        changed = JSON.parse(prevDev.areaChangedAt || "{}");
+      } catch {}
+      let dirty = false;
+      for (const [name, scheme] of schemes(device.areas))
+        if (before.get(name) !== scheme) {
+          changed[name] = now;
+          dirty = true;
+        }
+      if (dirty) device.areaChangedAt = JSON.stringify(changed);
+    }
     if (snapId) device.intervalSnapId = snapId;
     ev.totalOccupied = occ ?? undefined;
     ev.totalAvailable = avail ?? undefined;
@@ -219,9 +243,18 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
         box,
         res,
       };
-      await store.hset(`spots:${deviceId}`, { [key]: JSON.stringify(spot) });
-      // 차가 빠지면 장기주차 알람 해제
-      if (occupied === false) await store.hdel(`alarms:${deviceId}`, key);
+      // 카메라는 리포트를 큐에 쌓아 순서대로 보내지만, 재전송 등으로 늦게 도착한 예전 리포트가
+      // 최신 상태를 덮어쓰지 않도록 카메라 시각("YYYY-MM-DD HH:MM:SS")으로 비교
+      const prev = (await store.hgetall(`spots:${deviceId}`))[key];
+      let prevTime = "";
+      try {
+        prevTime = prev ? (JSON.parse(prev) as Spot).cameraTime : "";
+      } catch {}
+      if (!prevTime || !spot.cameraTime || spot.cameraTime >= prevTime) {
+        await store.hset(`spots:${deviceId}`, { [key]: JSON.stringify(spot) });
+        // 차가 빠지면 장기주차 알람 해제
+        if (occupied === false) await store.hdel(`alarms:${deviceId}`, key);
+      }
     } else {
       const alarm: Spot = {
         key,
@@ -280,6 +313,7 @@ export async function getStatus(eventLimit = 100) {
         lastIntervalAt: d.lastIntervalAt ?? "",
         areas: d.areas ? parseList<AreaDetail[]>([d.areas])[0] ?? [] : [],
         intervalSnapId: d.intervalSnapId || undefined,
+        areaChangedAt: parseList<Record<string, string>>([d.areaChangedAt || "{}"])[0] ?? {},
         spots: parseList<Spot>(Object.values(spots)).sort(bySpot),
         alarms: parseList<Spot>(Object.values(alarms)).sort(bySpot),
       };
