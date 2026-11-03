@@ -293,8 +293,13 @@ function DeviceCard({
                     <button
                       key={s.key}
                       className={`spot ${cls} ${alarmKeys.has(s.key) ? "alarm" : ""}`}
-                      data-click={s.snapId ? "1" : "0"}
-                      onClick={() => openSnap(s, `${s.area} ${s.index}`)}
+                      data-click={s.snapId || d.lastSnapId ? "1" : "0"}
+                      // 스냅샷은 몇 분에 한 장만 저장하므로, 이 면의 사진이 없으면 최근 전체 화면을 보여줌
+                      onClick={() =>
+                        s.snapId
+                          ? openSnap(s, `${s.area} ${s.index}`)
+                          : openSnap({ snapId: d.lastSnapId }, `${s.area} ${s.index} (최근 전체 화면)`)
+                      }
                       title={`카메라 시각 ${s.cameraTime}`}
                     >
                       <div className="no">{s.index}</div>

@@ -1,8 +1,12 @@
+import sharp from "sharp";
 import { kv } from "./kv";
 
 const MAX_EVENTS = 300;
 const MAX_RAW = 20;
 const SNAPSHOT_TTL = Math.round(Number(process.env.SNAPSHOT_TTL_HOURS || 24) * 3600);
+// Upstash 무료 플랜(저장 250MB, 전송 10GB/월) 보호: 카메라별로 이 간격(초)마다 한 장만, 줄여서 저장
+const SNAPSHOT_INTERVAL_SEC = Number(process.env.SNAPSHOT_INTERVAL_SEC || 300);
+const SNAPSHOT_WIDTH = Number(process.env.SNAPSHOT_WIDTH || 1280);
 
 export type Box = { x1: number; y1: number; x2: number; y2: number };
 
@@ -116,16 +120,24 @@ function parseAreas(v: unknown): AreaDetail[] {
 
 const newId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-/** base64 스냅샷을 저장하고 id 를 돌려준다. 비어있으면 undefined.
- *  fixedId 를 주면 같은 키에 덮어써서 용량이 늘지 않는다 (주기 리포트용) */
-async function saveSnapshot(raw: unknown, fixedId?: string): Promise<string | undefined> {
+/** base64 스냅샷을 SNAPSHOT_WIDTH 폭 JPEG 로 줄여 저장하고 id 를 돌려준다. 비어있으면 undefined */
+async function saveSnapshot(raw: unknown): Promise<string | undefined> {
   let b64 = s(raw).trim();
   if (!b64 || b64.startsWith("$")) return undefined;
   const comma = b64.indexOf(",");
   if (b64.startsWith("data:") && comma > 0) b64 = b64.slice(comma + 1);
   b64 = b64.replace(/\s+/g, "");
   if (b64.length < 100) return undefined;
-  const id = fixedId ?? newId();
+  try {
+    const small = await sharp(Buffer.from(b64, "base64"))
+      .resize({ width: SNAPSHOT_WIDTH, withoutEnlargement: true })
+      .jpeg({ quality: 70 })
+      .toBuffer();
+    b64 = small.toString("base64");
+  } catch {
+    return undefined; // 이미지로 읽을 수 없으면 저장하지 않음
+  }
+  const id = newId();
   await kv().set(`snap:${id}`, b64, SNAPSHOT_TTL);
   return id;
 }
@@ -161,10 +173,11 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
   const now = new Date().toISOString();
   const deviceId = s(p.sn) || s(p.mac_address) || s(p.device_name) || "unknown";
   const reportType = s(p.report_type) || "unknown";
-  const snapId = await saveSnapshot(
-    p.full_snapshot,
-    reportType === "interval" ? `latest-${deviceId.toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : undefined
-  );
+  const prevDev = await store.hgetall(`dev:${deviceId}`);
+  // 장기주차 알림은 항상, 그 외에는 마지막 저장 후 SNAPSHOT_INTERVAL_SEC 이 지났을 때만 저장
+  const sinceLastSnap = (Date.now() - new Date(prevDev.lastSnapAt || 0).getTime()) / 1000;
+  const snapId =
+    reportType === "alarm" || !(sinceLastSnap < SNAPSHOT_INTERVAL_SEC) ? await saveSnapshot(p.full_snapshot) : undefined;
 
   const device: Record<string, string> = {
     deviceName: s(p.device_name),
@@ -174,7 +187,10 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
     lastCameraTime: s(p.time),
   };
   // 어떤 리포트든 스냅샷이 오면 "최신 전체 화면"으로 사용
-  if (snapId) device.lastSnapId = snapId;
+  if (snapId) {
+    device.lastSnapId = snapId;
+    device.lastSnapAt = now;
+  }
 
   const ev: ParkingEvent = {
     id: newId(),
@@ -195,7 +211,6 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
     device.lastIntervalAt = now;
     device.areas = JSON.stringify(parseAreas(p.parking_detail));
     // 구역별 번호 체계가 바뀌면(구역을 다시 그림) 그 시각을 남겨, 이전 변화 리포트는 화면에서 미확인 처리
-    const prevDev = await store.hgetall(`dev:${deviceId}`);
     const schemes = (areas: string) => {
       try {
         return new Map((JSON.parse(areas) as AreaDetail[]).map((a) => [a.area_name, a.numbering_scheme]));
@@ -217,7 +232,7 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
         }
       if (dirty) device.areaChangedAt = JSON.stringify(changed);
     }
-    device.intervalSnapId = snapId ?? "";
+    if (snapId) device.intervalSnapId = snapId;
     ev.totalOccupied = occ ?? undefined;
     ev.totalAvailable = avail ?? undefined;
   } else if (reportType === "trigger" || reportType === "alarm") {
