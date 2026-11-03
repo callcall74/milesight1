@@ -54,6 +54,7 @@ export type Device = {
   lastIntervalAt: string;
   areas: AreaDetail[];
   intervalSnapId?: string;
+  lastSnapId?: string;
   areaChangedAt: Record<string, string>; // 구역 → 번호 체계가 바뀐 시각
   spots: Spot[];
   alarms: Spot[];
@@ -172,6 +173,8 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
     lastSeen: now,
     lastCameraTime: s(p.time),
   };
+  // 어떤 리포트든 스냅샷이 오면 "최신 전체 화면"으로 사용
+  if (snapId) device.lastSnapId = snapId;
 
   const ev: ParkingEvent = {
     id: newId(),
@@ -214,7 +217,7 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
         }
       if (dirty) device.areaChangedAt = JSON.stringify(changed);
     }
-    if (snapId) device.intervalSnapId = snapId;
+    device.intervalSnapId = snapId ?? "";
     ev.totalOccupied = occ ?? undefined;
     ev.totalAvailable = avail ?? undefined;
   } else if (reportType === "trigger" || reportType === "alarm") {
@@ -313,6 +316,7 @@ export async function getStatus(eventLimit = 100) {
         lastIntervalAt: d.lastIntervalAt ?? "",
         areas: d.areas ? parseList<AreaDetail[]>([d.areas])[0] ?? [] : [],
         intervalSnapId: d.intervalSnapId || undefined,
+        lastSnapId: d.lastSnapId || undefined,
         areaChangedAt: parseList<Record<string, string>>([d.areaChangedAt || "{}"])[0] ?? {},
         spots: parseList<Spot>(Object.values(spots)).sort(bySpot),
         alarms: parseList<Spot>(Object.values(alarms)).sort(bySpot),

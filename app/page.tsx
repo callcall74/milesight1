@@ -226,10 +226,13 @@ function DeviceCard({
       )}
       <p className="muted small">
         주기 리포트: {d.lastIntervalAt ? `${fmt(d.lastIntervalAt)} (${ago(d.lastIntervalAt, now)})` : "수신 없음"}
-        {d.intervalSnapId && (
+        {(d.lastSnapId || d.intervalSnapId) && (
           <>
             {" · "}
-            <button className="link" onClick={() => openSnap({ snapId: d.intervalSnapId }, `${d.deviceName} 전체 화면`)}>
+            <button
+              className="link"
+              onClick={() => openSnap({ snapId: d.lastSnapId || d.intervalSnapId }, `${d.deviceName} 최근 전체 화면`)}
+            >
               전체 스냅샷 보기
             </button>
           </>
@@ -414,6 +417,7 @@ function sumOf(list: AreaStat[], k: "total" | "occupied" | "free") {
 
 function SnapshotModal({ v, onClose }: { v: SnapView; onClose: () => void }) {
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  const [failed, setFailed] = useState(false);
   const res = v.res ?? size;
 
   useEffect(() => {
@@ -433,11 +437,16 @@ function SnapshotModal({ v, onClose }: { v: SnapView; onClose: () => void }) {
         </div>
         <div className="snap-wrap">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={`/api/snapshot/${v.snapId}`}
-            alt="snapshot"
-            onLoad={(e) => setSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
-          />
+          {failed ? (
+            <p className="muted">스냅샷이 만료되었거나 없습니다.</p>
+          ) : (
+            <img
+              src={`/api/snapshot/${v.snapId}`}
+              alt="snapshot"
+              onLoad={(e) => setSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+              onError={() => setFailed(true)}
+            />
+          )}
           {v.box && res && (
             <svg viewBox={`0 0 ${res.w} ${res.h}`} preserveAspectRatio="none">
               <rect
