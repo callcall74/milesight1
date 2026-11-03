@@ -40,7 +40,7 @@ function occLabel(o: boolean | null | undefined, raw?: string) {
 const TYPE_LABEL: Record<string, string> = { interval: "주기", trigger: "변화", alarm: "장기주차" };
 
 // 서버의 DEBOUNCE_SEC 과 같은 값: 이 시간 안에 원래 상태로 되돌아간 변화는 깜빡임으로 보고 목록에서 숨김
-const DEBOUNCE_MS = 30_000;
+const DEBOUNCE_MS = 60_000;
 
 /** 같은 면에서 A→B→A 가 DEBOUNCE_MS 안에 일어나면 B 와 되돌아온 A 이벤트를 숨긴다 */
 function hideFlicker(events: ParkingEvent[]): ParkingEvent[] {

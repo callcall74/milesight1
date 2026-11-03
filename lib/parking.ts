@@ -10,7 +10,7 @@ const SNAPSHOT_INTERVAL_SEC = Number(process.env.SNAPSHOT_INTERVAL_SEC || 300);
 const SPOT_SNAPSHOT_INTERVAL_SEC = Number(process.env.SPOT_SNAPSHOT_INTERVAL_SEC || 600);
 const SNAPSHOT_WIDTH = Number(process.env.SNAPSHOT_WIDTH || 1280);
 // 이 시간(초) 안에 원래 상태로 되돌아가는 변화(차 그림자, 사람 지나감 등으로 인한 깜빡임)는 무시
-const DEBOUNCE_SEC = Number(process.env.DEBOUNCE_SEC || 30);
+const DEBOUNCE_SEC = Number(process.env.DEBOUNCE_SEC || 60);
 
 export type Box = { x1: number; y1: number; x2: number; y2: number };
 
