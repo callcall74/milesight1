@@ -3,7 +3,7 @@ import { clean } from "./lib/env";
 
 // 사이트 일시 중지 스위치. true 이면 함수(서버리스)까지 가지 않고 여기서 바로 응답해
 // Upstash/함수 사용량이 늘지 않는다. 카메라 수신은 재전송을 막기 위해 200 으로 응답.
-const PAUSED = true;
+const PAUSED = false;
 
 // 대시보드/조회 API 보호 (DASHBOARD_PASSWORD 가 설정된 경우만). 카메라 수신 경로는 제외.
 export function middleware(req: NextRequest) {
