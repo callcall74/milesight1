@@ -11,7 +11,8 @@ type Status = {
   raw: unknown[];
 };
 
-type SnapView = { snapId: string; box?: Box; res?: { w: number; h: number }; title: string };
+type LabeledBox = { box: Box; label: string };
+type SnapView = { snapId: string; box?: Box; boxes?: LabeledBox[]; res?: { w: number; h: number }; title: string };
 
 // Upstash 무료 플랜 명령 수(월 50만)를 아끼기 위해 15초 간격, 탭이 숨겨지면 멈춤
 const POLL_MS = 15000;
@@ -98,8 +99,10 @@ export default function Dashboard() {
     };
   }, [load]);
 
-  const openSnap = (v: { snapId?: string; box?: Box; res?: { w: number; h: number } }, title: string) =>
-    v.snapId && setSnap({ snapId: v.snapId, box: v.box, res: v.res, title });
+  const openSnap = (
+    v: { snapId?: string; box?: Box; boxes?: LabeledBox[]; res?: { w: number; h: number } },
+    title: string
+  ) => v.snapId && setSnap({ snapId: v.snapId, box: v.box, boxes: v.boxes, res: v.res, title });
 
   return (
     <main>
@@ -206,7 +209,10 @@ function DeviceCard({
 }: {
   d: Device;
   now: number;
-  openSnap: (v: Spot | { snapId?: string }, title: string) => void;
+  openSnap: (
+    v: Spot | { snapId?: string; box?: Box; boxes?: LabeledBox[]; res?: { w: number; h: number } },
+    title: string
+  ) => void;
 }) {
   const alarmKeys = new Set(d.alarms.map((a) => a.key));
   const spotGroups = buildSpotGroups(d);
@@ -259,7 +265,18 @@ function DeviceCard({
             {" · "}
             <button
               className="link"
-              onClick={() => openSnap({ snapId: d.lastSnapId || d.intervalSnapId }, `${d.deviceName} 최근 전체 화면`)}
+              onClick={() => {
+                // 지금 점유 중인 모든 면의 노란 박스를 한 장에 표시
+                const occ = spotGroups.flatMap((g) => g.spots).filter((x) => x.occupied === true && x.box);
+                openSnap(
+                  {
+                    snapId: d.lastSnapId || d.intervalSnapId,
+                    boxes: occ.map((x) => ({ box: x.box!, label: `${x.area}-${x.index}` })),
+                    res: occ.find((x) => x.res)?.res,
+                  },
+                  `${d.deviceName} 최근 전체 화면 · 점유 ${occ.length}면`
+                );
+              }}
             >
               전체 스냅샷 보기
             </button>
@@ -484,17 +501,35 @@ function SnapshotModal({ v, onClose }: { v: SnapView; onClose: () => void }) {
               onError={() => setFailed(true)}
             />
           )}
-          {v.box && res && (
+          {res && (v.box || v.boxes?.length) && (
             <svg viewBox={`0 0 ${res.w} ${res.h}`} preserveAspectRatio="none">
-              <rect
-                x={v.box.x1}
-                y={v.box.y1}
-                width={v.box.x2 - v.box.x1}
-                height={v.box.y2 - v.box.y1}
-                fill="none"
-                stroke="#ffcc00"
-                strokeWidth={Math.max(2, res.w / 300)}
-              />
+              {[...(v.box ? [{ box: v.box, label: "" }] : []), ...(v.boxes ?? [])].map(({ box, label }, i) => (
+                <g key={i}>
+                  <rect
+                    x={box.x1}
+                    y={box.y1}
+                    width={box.x2 - box.x1}
+                    height={box.y2 - box.y1}
+                    fill="none"
+                    stroke="#ffcc00"
+                    strokeWidth={Math.max(2, res.w / 300)}
+                  />
+                  {label && (
+                    <text
+                      x={box.x1}
+                      y={Math.max(res.h / 30, box.y1 - res.h / 120)}
+                      fill="#ffcc00"
+                      fontSize={res.h / 30}
+                      fontWeight="bold"
+                      stroke="#000"
+                      strokeWidth={res.h / 600}
+                      paintOrder="stroke"
+                    >
+                      {label}
+                    </text>
+                  )}
+                </g>
+              ))}
             </svg>
           )}
         </div>
