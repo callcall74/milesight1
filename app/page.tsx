@@ -482,7 +482,8 @@ function SnapshotModal({ v, onClose }: { v: SnapView; onClose: () => void }) {
 
   return (
     <div className="modal" onClick={onClose}>
-      <div className="modal-inner" onClick={(e) => e.stopPropagation()}>
+      {/* 사진(창 안 어디든) 을 눌러도 닫힌다 */}
+      <div className="modal-inner" style={{ cursor: "pointer" }}>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
           <strong>{v.title}</strong>
           <button className="link" onClick={onClose}>
