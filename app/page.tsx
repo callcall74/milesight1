@@ -306,8 +306,10 @@ function DeviceCard({
       </p>
 
       {areaStats.length > 0 && (
-        <>
-          <h3>구역별 현황</h3>
+        <details className="area-fold">
+          <summary>
+            <h3>구역별 현황</h3>
+          </summary>
           <div className="table-wrap">
             <table className="area-table">
               <thead>
@@ -336,7 +338,7 @@ function DeviceCard({
               </tbody>
             </table>
           </div>
-        </>
+        </details>
       )}
 
       {spotGroups.length > 0 && (
