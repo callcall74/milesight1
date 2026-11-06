@@ -23,15 +23,16 @@ Redis 키: `devices`, `dev:{sn}`, `spots:{sn}`, `alarms:{sn}`, `events`(최근 3
    - `INGEST_USER`, `INGEST_PASSWORD` : 카메라 인증용 (카메라 화면의 User Name / Password 와 동일하게)
    - `DASHBOARD_PASSWORD` : 대시보드 접근 비밀번호 (아이디는 `DASHBOARD_USER`, 기본 `admin`)
    - `SNAPSHOT_TTL_HOURS` : 스냅샷 보관 시간 (기본 24)
-4. **실행**: `npm run start` (환경변수를 바꾸면 다시 실행해야 반영됩니다)
+4. **실행**: `pm2 start ecosystem.config.js` (포트 3193)
+   - 환경변수를 바꾸거나 다시 빌드한 뒤에는 `pm2 restart milesight` 로 반영합니다
 5. **카메라 설정** (Post → HTTP)
-   - URL: `https://<서버 주소>/api/milesight`
+   - URL: `http://<서버 주소>:3193/api/milesight`
    - User Name / Password: 3번에서 넣은 값
    - Select Events: Parking Management
    - 전체 현황이 필요하면 Periodic Report 체크 + Period 설정
 
 카메라가 Basic 인증을 보내지 않는 경우에는 `INGEST_TOKEN` 을 설정하고
-URL 을 `https://<서버 주소>/api/milesight?key=<토큰>` 으로 넣으세요.
+URL 을 `http://<서버 주소>:3193/api/milesight?key=<토큰>` 으로 넣으세요.
 
 ## 처음 연결 후 확인할 것
 
