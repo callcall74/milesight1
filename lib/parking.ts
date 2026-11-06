@@ -1,5 +1,6 @@
 import sharp from "sharp";
 import { kv } from "./kv";
+import { splitList } from "./list";
 
 const MAX_EVENTS = 300;
 const MAX_RAW = 20;
@@ -9,6 +10,8 @@ const SNAPSHOT_INTERVAL_SEC = Number(process.env.SNAPSHOT_INTERVAL_SEC || 300);
 const SNAPSHOT_WIDTH = Number(process.env.SNAPSHOT_WIDTH || 1280);
 // 이 시간(초) 안에 원래 상태로 되돌아가는 변화(차 그림자, 사람 지나감 등으로 인한 깜빡임)는 무시
 const DEBOUNCE_SEC = Number(process.env.DEBOUNCE_SEC || 60);
+// 점유 중인 면을 주기 리포트가 이 횟수만큼 연속으로 비어 있다고 하면 빈자리로 확정
+const INTERVAL_VACANT_COUNT = 3;
 
 export type Box = { x1: number; y1: number; x2: number; y2: number };
 
@@ -23,6 +26,7 @@ export type Spot = {
   cameraTime: string;
   snapId?: string;
   pending?: Spot; // 아직 DEBOUNCE_SEC 동안 유지되지 않은 새 상태 (확정 전)
+  intervalVacant?: number; // 점유 상태인데 주기 리포트가 연속으로 비어 있다고 한 횟수
   box?: Box;
   res?: { w: number; h: number };
 };
@@ -176,6 +180,82 @@ export async function logRaw(contentType: string, body: string, parsed: Payload 
   );
 }
 
+/** 빈자리 변화 리포트를 놓쳐 점유로 남은 면을 주기 리포트로 바로잡는다. 빈자리로 확정한 면의 이벤트를 돌려준다 */
+async function applyIntervalVacant(
+  deviceId: string,
+  deviceName: string,
+  prevSpots: Record<string, string>,
+  areas: AreaDetail[],
+  totalOccupied: number | null,
+  changedAt: Record<string, string>,
+  time: string,
+  now: string
+): Promise<ParkingEvent[]> {
+  const report = areas.map((a) => ({
+    area: a.area_name,
+    indexes: splitList(a.numbering_scheme),
+    occupied: splitList(a.occupancy).map(parseOccupied),
+  }));
+  // 면별 값의 합이 합계와 다르면 이번 면별 값은 믿을 수 없으므로 판단하지 않음
+  const sum = report.flatMap((a) => a.occupied).filter((o) => o === true).length;
+  if (totalOccupied !== null && sum !== totalOccupied) return [];
+
+  const updates: Record<string, string> = {};
+  const events: ParkingEvent[] = [];
+  for (const { area, indexes, occupied } of report) {
+    if (indexes.length !== occupied.length) continue;
+    for (const [i, index] of indexes.entries()) {
+      const key = `${area}#${index}`;
+      if (!prevSpots[key]) continue;
+      let spot: Spot;
+      try {
+        spot = settleSpot(JSON.parse(prevSpots[key]) as Spot);
+      } catch {
+        continue;
+      }
+      // 이 주기 리포트보다 나중의 변화 리포트가 이미 왔거나 화면에서 숨긴 예전 기록이면 건드리지 않음
+      if ((time && spot.cameraTime > time) || spot.since < (changedAt[area] ?? "")) continue;
+      if (spot.occupied === true && occupied[i] === false) {
+        const count = (spot.intervalVacant ?? 0) + 1;
+        if (count < INTERVAL_VACANT_COUNT) {
+          updates[key] = JSON.stringify({ ...spot, intervalVacant: count });
+          continue;
+        }
+        updates[key] = JSON.stringify({
+          ...spot,
+          occupied: false,
+          occupancy: "0",
+          duration: "",
+          since: now,
+          cameraTime: time,
+          pending: undefined,
+          intervalVacant: undefined,
+        });
+        await kv().hdel(`alarms:${deviceId}`, key);
+        events.push({
+          id: newId(),
+          reportType: "correction",
+          eventType: "",
+          deviceId,
+          deviceName,
+          area,
+          index,
+          occupancy: "0",
+          occupied: false,
+          cameraTime: time,
+          receivedAt: now,
+          box: spot.box,
+          res: spot.res,
+        });
+      } else if (spot.intervalVacant) {
+        updates[key] = JSON.stringify({ ...spot, intervalVacant: undefined });
+      }
+    }
+  }
+  if (Object.keys(updates).length) await kv().hset(`spots:${deviceId}`, updates);
+  return events;
+}
+
 export async function ingest(p: Payload): Promise<ParkingEvent> {
   const store = kv();
   const now = new Date().toISOString();
@@ -261,6 +341,17 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
         }
       if (dirty) device.areaChangedAt = JSON.stringify(changed);
     }
+    const corrections = await applyIntervalVacant(
+      deviceId,
+      s(p.device_name),
+      prevSpots,
+      parseAreas(p.parking_detail),
+      occ,
+      parseList<Record<string, string>>([device.areaChangedAt || prevDev.areaChangedAt || "{}"])[0] ?? {},
+      s(p.time),
+      now
+    );
+    for (const c of corrections) await store.lpushTrim("events", JSON.stringify(c), MAX_EVENTS);
     ev.totalOccupied = occ ?? undefined;
     ev.totalAvailable = avail ?? undefined;
   } else if (reportType === "trigger" || reportType === "alarm") {
@@ -325,6 +416,51 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
   await store.hset(`dev:${deviceId}`, device);
   await store.lpushTrim("events", JSON.stringify(ev), MAX_EVENTS);
   return ev;
+}
+
+/** 관리자가 면 상태를 직접 지정. 대시보드에 나오는 면이 아니면 false */
+export async function setSpotManually(deviceId: string, area: string, index: string, occupied: boolean) {
+  const store = kv();
+  const now = new Date().toISOString();
+  const [d, spots] = await Promise.all([store.hgetall(`dev:${deviceId}`), store.hgetall(`spots:${deviceId}`)]);
+  const key = `${area}#${index}`;
+  const configured = parseAreas(d.areas ?? "").some(
+    (a) => a.area_name === area && splitList(a.numbering_scheme).includes(index)
+  );
+  if (!configured && !spots[key]) return false;
+  const prev = spots[key] ? parseList<Spot>([spots[key]])[0] : undefined;
+  // 카메라 시각을 지금으로 맞춰, 수정 전에 찍힌 리포트가 늦게 도착해도 덮어쓰지 않게 함
+  const cameraTime = d.lastCameraTime ?? "";
+  const next: Spot = {
+    ...prev,
+    key,
+    area,
+    index,
+    occupied,
+    occupancy: occupied ? "1" : "0",
+    duration: "",
+    since: now,
+    cameraTime,
+    pending: undefined,
+    intervalVacant: undefined,
+  };
+  await store.hset(`spots:${deviceId}`, { [key]: JSON.stringify(next) });
+  if (!occupied) await store.hdel(`alarms:${deviceId}`, key);
+  const ev: ParkingEvent = {
+    id: newId(),
+    reportType: "manual",
+    eventType: "",
+    deviceId,
+    deviceName: d.deviceName ?? "",
+    area,
+    index,
+    occupancy: next.occupancy,
+    occupied,
+    cameraTime,
+    receivedAt: now,
+  };
+  await store.lpushTrim("events", JSON.stringify(ev), MAX_EVENTS);
+  return true;
 }
 
 const parseList = <T,>(rows: string[]): T[] =>

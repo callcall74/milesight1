@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { Box, Device, ParkingEvent, Spot } from "@/lib/parking";
+import { splitList } from "@/lib/list";
 
 type Status = {
   store: "memory" | "upstash";
@@ -38,7 +39,7 @@ function occLabel(o: boolean | null | undefined, raw?: string) {
   return <span className="tag">{raw || "?"}</span>;
 }
 
-const TYPE_LABEL: Record<string, string> = { interval: "주기", trigger: "변화", alarm: "장기주차" };
+const TYPE_LABEL: Record<string, string> = { interval: "주기", trigger: "변화", alarm: "장기주차", correction: "주기보정", manual: "수동수정" };
 
 // 서버의 DEBOUNCE_SEC 과 같은 값: 이 시간 안에 원래 상태로 되돌아간 변화는 깜빡임으로 보고 목록에서 숨김
 const DEBOUNCE_MS = 60_000;
@@ -131,7 +132,7 @@ export default function Dashboard() {
       )}
 
       {data?.devices.map((d) => (
-        <DeviceCard key={d.id} d={d} now={now} openSnap={openSnap} />
+        <DeviceCard key={d.id} d={d} now={now} openSnap={openSnap} reload={load} />
       ))}
 
       {data && data.events.length > 0 && (
@@ -161,7 +162,7 @@ export default function Dashboard() {
                     <td>{e.deviceName || e.deviceId}</td>
                     <td>{e.area !== undefined ? `${e.area} / ${e.index}` : "-"}</td>
                     <td>
-                      {e.reportType === "trigger"
+                      {e.reportType === "trigger" || e.reportType === "correction" || e.reportType === "manual"
                         ? occLabel(e.occupied, e.occupancy)
                         : e.reportType === "interval"
                           ? `점유 ${e.totalOccupied ?? "?"} · 빈자리 ${e.totalAvailable ?? "?"}`
@@ -218,16 +219,32 @@ function DeviceCard({
   d,
   now,
   openSnap,
+  reload,
 }: {
   d: Device;
   now: number;
+  reload: () => void;
   openSnap: (
     v: Spot | { snapId?: string; box?: Box; boxes?: LabeledBox[]; res?: { w: number; h: number } },
     title: string
   ) => void;
 }) {
+  const [editing, setEditing] = useState(false);
   const alarmKeys = new Set(d.alarms.map((a) => a.key));
   const spotGroups = buildSpotGroups(d);
+
+  // 수정 모드에서 면을 누르면 점유 ↔ 빈자리로 바꾼다 (확인중인 면은 점유로)
+  const changeSpot = async (s: Spot) => {
+    const occupied = s.occupied !== true;
+    if (!window.confirm(`${s.area}-${s.index} 을(를) ${occupied ? "점유" : "빈자리"}로 바꿀까요?`)) return;
+    const r = await fetch("/api/spot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceId: d.id, area: s.area, index: s.index, occupied }),
+    }).catch(() => null);
+    if (!r?.ok) window.alert("수정하지 못했습니다. 다시 시도해 주세요.");
+    reload();
+  };
   const areaStats = buildAreaStats(spotGroups);
   // 면별 상태(변화 리포트)로 계산, 면 정보가 없으면 주기 리포트 총계
   const known = areaStats.some((a) => a.total);
@@ -324,31 +341,41 @@ function DeviceCard({
 
       {spotGroups.length > 0 && (
         <>
-          <h3>주차면 상태</h3>
+          <h3>
+            주차면 상태{" "}
+            <button className="link" onClick={() => setEditing(!editing)}>
+              {editing ? "수정 끝내기" : "상태 수정"}
+            </button>
+          </h3>
+          {editing && <p className="muted small">상태를 바꿀 면을 누르세요.</p>}
           {spotGroups.map((g) => (
             <div className="spot-row" key={g.area}>
               <div className="spot-area">{g.area || "?"}</div>
               <div className="spots">
                 {g.spots.map((s) => {
-                  if (!s.since)
+                  if (!s.since && !editing)
                     return (
                       <div key={s.key} className="spot free unknown" title="아직 변화 리포트가 없어 빈자리로 추정 중">
                         <div className="no">{s.index}</div>
                         <div className="st">빈자리(확인중)</div>
                       </div>
                     );
-                  const cls = s.occupied === true ? "busy" : s.occupied === false ? "free" : "";
+                  const cls = !s.since ? "free unknown" : s.occupied === true ? "busy" : s.occupied === false ? "free" : "";
                   return (
                     <button
                       key={s.key}
                       className={`spot ${cls} ${alarmKeys.has(s.key) ? "alarm" : ""}`}
-                      data-click={d.lastSnapId ? "1" : "0"}
-                      onClick={() => openSnap(fullSnapView(d, s.key, s), `${s.area} ${s.index} · 사진 ${fmt(d.lastSnapAt)}`)}
+                      data-click={editing || d.lastSnapId ? "1" : "0"}
+                      onClick={() =>
+                        editing
+                          ? changeSpot(s)
+                          : openSnap(fullSnapView(d, s.key, s), `${s.area} ${s.index} · 사진 ${fmt(d.lastSnapAt)}`)
+                      }
                       title={`카메라 시각 ${s.cameraTime}`}
                     >
                       <div className="no">{s.index}</div>
                       <div className="st">
-                        {s.occupied === true ? "점유" : s.occupied === false ? "빈자리" : s.occupancy || "?"}
+                        {!s.since ? "빈자리(확인중)" : s.occupied === true ? "점유" : s.occupied === false ? "빈자리" : s.occupancy || "?"}
                       </div>
                       <div className="muted small">{ago(s.since, now)}</div>
                     </button>
@@ -403,21 +430,6 @@ function DeviceCard({
 
 type AreaStat = { name: string; total: number | null; occupied: number | null; free: number | null };
 type SpotGroup = { area: string; spots: Spot[] };
-
-// "[1,2]" / "1,2" → ["1","2"], "1-4" → ["1","2","3","4"]
-function splitList(v: string): string[] {
-  const out: string[] = [];
-  for (const part of v.replace(/[[\]"']/g, "").split(",")) {
-    const p = part.trim();
-    const m = p.match(/^(\d+)\s*-\s*(\d+)$/);
-    if (m) {
-      const [a, b] = [Number(m[1]), Number(m[2])];
-      if (Math.abs(b - a) > 200) continue;
-      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) out.push(String(i));
-    } else if (p) out.push(p);
-  }
-  return out;
-}
 
 /** 구역별 한 줄씩. 면 상태는 변화 리포트로만 판단한다.
  *  (Occupancy Detection 모드의 주기 리포트는 occupancy 가 항상 0 이라 신뢰할 수 없음)

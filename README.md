@@ -10,6 +10,7 @@ Upstash Redis 에 저장하고, 웹 대시보드로 보여주는 Next.js 앱입�
 | `POST /api/milesight` | 카메라 수신 엔드포인트 (카메라 Post 설정의 URL) |
 | `GET /api/status` | 대시보드용 현재 상태 / 최근 이벤트 / 원본 로그 |
 | `GET /api/snapshot/{id}` | 저장된 스냅샷 이미지 |
+| `POST /api/spot` | 관리자의 면 상태 수정 (대시보드 "상태 수정") |
 | `/` | 대시보드 (5초마다 자동 갱신) |
 
 Redis 키: `devices`, `dev:{sn}`, `spots:{sn}`, `alarms:{sn}`, `events`(최근 300건), `raw`(최근 20건 원본), `snap:{id}`(TTL).
@@ -52,5 +53,6 @@ Upstash 환경변수가 없으면 메모리 저장소로 동작합니다(재시�
 
 ## 용량 참고 (Upstash 무료 플랜)
 
+- 점유 중인 면을 주기 리포트가 3번 연속 비어 있다고 하면 빈자리로 바로잡습니다 (이벤트 종류 "주기보정").
 - 변화 리포트별 사진은 저장하지 않습니다. 카메라당 최신 전체 화면 한 장을 `SNAPSHOT_INTERVAL_SEC` 마다 덮어씁니다.
 - 장기주차 알림 사진은 따로 저장됩니다. 모든 스냅샷은 `SNAPSHOT_TTL_HOURS` 후 자동 삭제됩니다.
