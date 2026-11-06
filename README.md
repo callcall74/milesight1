@@ -22,7 +22,7 @@ Redis 키: `devices`, `dev:{sn}`, `spots:{sn}`, `alarms:{sn}`, `events`(최근 3
 3. **환경변수 추가** (`.env.example` 을 `.env.local` 로 복사해 작성)
    - `INGEST_USER`, `INGEST_PASSWORD` : 카메라 인증용 (카메라 화면의 User Name / Password 와 동일하게)
    - `DASHBOARD_PASSWORD` : 대시보드 접근 비밀번호 (아이디는 `DASHBOARD_USER`, 기본 `admin`)
-   - `SNAPSHOT_TTL_HOURS` : 스냅샷 보관 시간 (기본 24)
+   - `SNAPSHOT_TTL_HOURS` : 스냅샷 자동 삭제 시간 (기본 1)
 4. **실행**: `pm2 start ecosystem.config.js` (포트 3193)
    - 환경변수를 바꾸거나 다시 빌드한 뒤에는 `pm2 restart milesight` 로 반영합니다
 5. **카메라 설정** (Post → HTTP)
@@ -52,5 +52,5 @@ Upstash 환경변수가 없으면 메모리 저장소로 동작합니다(재시�
 
 ## 용량 참고 (Upstash 무료 플랜)
 
-- 스냅샷은 base64 로 Redis 에 저장되며 `SNAPSHOT_TTL_HOURS` 후 자동 삭제됩니다.
-  이벤트가 많으면 TTL 을 줄이거나 카메라의 스냅샷 전송을 끄세요.
+- 변화 리포트별 사진은 저장하지 않습니다. 카메라당 최신 전체 화면 한 장을 `SNAPSHOT_INTERVAL_SEC` 마다 덮어씁니다.
+- 장기주차 알림 사진은 따로 저장됩니다. 모든 스냅샷은 `SNAPSHOT_TTL_HOURS` 후 자동 삭제됩니다.

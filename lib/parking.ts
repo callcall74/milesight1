@@ -3,11 +3,9 @@ import { kv } from "./kv";
 
 const MAX_EVENTS = 300;
 const MAX_RAW = 20;
-const SNAPSHOT_TTL = Math.round(Number(process.env.SNAPSHOT_TTL_HOURS || 24) * 3600);
-// Upstash 무료 플랜(저장 250MB, 전송 10GB/월) 보호: 카메라별로 이 간격(초)마다 한 장만, 줄여서 저장
+const SNAPSHOT_TTL = Math.round(Number(process.env.SNAPSHOT_TTL_HOURS || 1) * 3600);
+// Upstash 무료 플랜(저장 250MB, 전송 10GB/월) 보호: 카메라별 최신 전체 화면 한 장을 이 간격(초)마다 덮어써서 저장
 const SNAPSHOT_INTERVAL_SEC = Number(process.env.SNAPSHOT_INTERVAL_SEC || 300);
-// 점유(차 들어옴) 리포트는 면마다 사진을 따로 남기되, 같은 면은 이 간격(초)에 한 장까지
-const SPOT_SNAPSHOT_INTERVAL_SEC = Number(process.env.SPOT_SNAPSHOT_INTERVAL_SEC || 600);
 const SNAPSHOT_WIDTH = Number(process.env.SNAPSHOT_WIDTH || 1280);
 // 이 시간(초) 안에 원래 상태로 되돌아가는 변화(차 그림자, 사람 지나감 등으로 인한 깜빡임)는 무시
 const DEBOUNCE_SEC = Number(process.env.DEBOUNCE_SEC || 60);
@@ -24,8 +22,6 @@ export type Spot = {
   since: string; // 서버 수신 시각 (ISO)
   cameraTime: string;
   snapId?: string;
-  snapAt?: string; // 이 면의 사진을 마지막으로 저장한 시각
-  occSnapId?: string; // 이 면의 마지막 점유 사진
   pending?: Spot; // 아직 DEBOUNCE_SEC 동안 유지되지 않은 새 상태 (확정 전)
   box?: Box;
   res?: { w: number; h: number };
@@ -64,8 +60,8 @@ export type Device = {
   totalAvailable: number | null;
   lastIntervalAt: string;
   areas: AreaDetail[];
-  intervalSnapId?: string;
   lastSnapId?: string;
+  lastSnapAt: string;
   areaChangedAt: Record<string, string>; // 구역 → 번호 체계가 바뀐 시각
   spots: Spot[];
   alarms: Spot[];
@@ -135,8 +131,8 @@ export function settleSpot(spot: Spot, nowMs = Date.now()): Spot {
 
 const newId = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
-/** base64 스냅샷을 SNAPSHOT_WIDTH 폭 JPEG 로 줄여 저장하고 id 를 돌려준다. 비어있으면 undefined */
-async function saveSnapshot(raw: unknown): Promise<string | undefined> {
+/** base64 스냅샷을 SNAPSHOT_WIDTH 폭 JPEG(base64) 로 줄여 돌려준다. 비어있으면 undefined */
+async function shrinkSnapshot(raw: unknown): Promise<string | undefined> {
   let b64 = s(raw).trim();
   if (!b64 || b64.startsWith("$")) return undefined;
   const comma = b64.indexOf(",");
@@ -148,13 +144,10 @@ async function saveSnapshot(raw: unknown): Promise<string | undefined> {
       .resize({ width: SNAPSHOT_WIDTH, withoutEnlargement: true })
       .jpeg({ quality: 70 })
       .toBuffer();
-    b64 = small.toString("base64");
+    return small.toString("base64");
   } catch {
     return undefined; // 이미지로 읽을 수 없으면 저장하지 않음
   }
-  const id = newId();
-  await kv().set(`snap:${id}`, b64, SNAPSHOT_TTL);
-  return id;
 }
 
 export async function getSnapshot(id: string): Promise<{ data: Buffer; type: string } | null> {
@@ -202,17 +195,11 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
   } catch {}
 
   // 스냅샷 저장 조건
-  //  - 장기주차 알림: 항상
-  //  - 점유 리포트: 그 면의 마지막 사진 후 SPOT_SNAPSHOT_INTERVAL_SEC 지났으면 (노란 박스와 함께 보기 위함)
-  //  - 그 외: 카메라 전체에서 SNAPSHOT_INTERVAL_SEC 마다 한 장 ("최근 전체 화면")
+  //  - 변화 리포트별 사진은 남기지 않는다. 카메라별 "최신 전체 화면" 한 장만 SNAPSHOT_INTERVAL_SEC 마다 덮어씀
+  //  - 장기주차 알림: 그 시점 사진을 따로 저장 (SNAPSHOT_TTL 후 삭제)
   const secSince = (iso?: string) => (Date.now() - new Date(iso || 0).getTime()) / 1000;
-  const wantSnap =
-    reportType === "alarm" ||
-    (reportType === "trigger" &&
-      parseOccupied(p.occupancy) === true &&
-      !(secSince(prevSpot?.snapAt) < SPOT_SNAPSHOT_INTERVAL_SEC)) ||
-    !(secSince(prevDev.lastSnapAt) < SNAPSHOT_INTERVAL_SEC);
-  const snapId = wantSnap ? await saveSnapshot(p.full_snapshot) : undefined;
+  const latestDue = !(secSince(prevDev.lastSnapAt) < SNAPSHOT_INTERVAL_SEC);
+  const small = reportType === "alarm" || latestDue ? await shrinkSnapshot(p.full_snapshot) : undefined;
 
   const device: Record<string, string> = {
     deviceName: s(p.device_name),
@@ -221,10 +208,17 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
     lastSeen: now,
     lastCameraTime: s(p.time),
   };
-  // 어떤 리포트든 스냅샷이 오면 "최신 전체 화면"으로 사용
-  if (snapId) {
-    device.lastSnapId = snapId;
+  // 어떤 리포트든 스냅샷이 오면 "최신 전체 화면"으로 사용. 덮어쓰므로 카메라당 한 장만 남음
+  if (small && latestDue) {
+    const latestId = `latest-${deviceId.toLowerCase().replace(/[^a-z0-9-]/g, "-")}`;
+    await store.set(`snap:${latestId}`, small, SNAPSHOT_TTL);
+    device.lastSnapId = latestId;
     device.lastSnapAt = now;
+  }
+  let alarmSnapId: string | undefined;
+  if (small && reportType === "alarm") {
+    alarmSnapId = newId();
+    await store.set(`snap:${alarmSnapId}`, small, SNAPSHOT_TTL);
   }
 
   const ev: ParkingEvent = {
@@ -235,7 +229,7 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
     deviceName: s(p.device_name),
     cameraTime: s(p.time),
     receivedAt: now,
-    snapId,
+    snapId: alarmSnapId,
   };
 
   if (reportType === "interval") {
@@ -267,7 +261,6 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
         }
       if (dirty) device.areaChangedAt = JSON.stringify(changed);
     }
-    if (snapId) device.intervalSnapId = snapId;
     ev.totalOccupied = occ ?? undefined;
     ev.totalAvailable = avail ?? undefined;
   } else if (reportType === "trigger" || reportType === "alarm") {
@@ -288,15 +281,9 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
         duration: s(p.duration),
         since: now,
         cameraTime: s(p.time),
-        // 이번에 사진을 안 남겼으면(같은 면 10분 제한) 마지막 점유 사진을 계속 사용.
-        // 빈자리 리포트가 와도 snapAt/occSnapId 는 유지해야 깜빡이는 면에서 제한이 풀리지 않음
-        snapId: snapId ?? (occupied ? prevSpot?.occSnapId : undefined),
-        snapAt: occupied && snapId ? now : prevSpot?.snapAt,
-        occSnapId: (occupied && snapId) || prevSpot?.occSnapId,
         box,
         res,
       };
-      ev.snapId = spot.snapId; // 이벤트 목록의 "보기"도 같은 사진
       // 카메라는 리포트를 큐에 쌓아 순서대로 보내지만, 재전송 등으로 늦게 도착한 예전 리포트가
       // 최신 상태를 덮어쓰지 않도록 카메라 시각("YYYY-MM-DD HH:MM:SS")으로 비교
       const prevTime = prevSpot?.pending?.cameraTime || prevSpot?.cameraTime || "";
@@ -310,7 +297,7 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
         } else {
           // 상태가 바뀜: DEBOUNCE_SEC 동안 유지되면 확정 (같은 상태가 다시 와도 처음 바뀐 시각 유지)
           const since = prevSpot.pending?.occupied === occupied ? prevSpot.pending.since : now;
-          next = { ...prevSpot, snapAt: spot.snapAt, occSnapId: spot.occSnapId, pending: { ...spot, since } };
+          next = { ...prevSpot, pending: { ...spot, since } };
         }
         await store.hset(`spots:${deviceId}`, { [key]: JSON.stringify(next) });
         // 차가 빠진 것이 확정되면 장기주차 알람 해제 (대기 중인 빈자리는 화면에서 걸러냄)
@@ -326,7 +313,7 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
         duration: s(p.duration),
         since: now,
         cameraTime: s(p.time),
-        snapId,
+        snapId: alarmSnapId,
         box,
         res,
       };
@@ -379,8 +366,8 @@ export async function getStatus(eventLimit = 100) {
         totalAvailable: num(d.totalAvailable),
         lastIntervalAt: d.lastIntervalAt ?? "",
         areas: d.areas ? parseList<AreaDetail[]>([d.areas])[0] ?? [] : [],
-        intervalSnapId: d.intervalSnapId || undefined,
         lastSnapId: d.lastSnapId || undefined,
+        lastSnapAt: d.lastSnapAt ?? "",
         areaChangedAt: parseList<Record<string, string>>([d.areaChangedAt || "{}"])[0] ?? {},
         spots: settled,
         // 빈자리로 확정된 면의 장기주차 알림은 숨김

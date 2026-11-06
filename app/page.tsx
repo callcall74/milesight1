@@ -11,7 +11,7 @@ type Status = {
   raw: unknown[];
 };
 
-type LabeledBox = { box: Box; label: string };
+type LabeledBox = { box: Box; label: string; focus?: boolean };
 type SnapView = { snapId: string; box?: Box; boxes?: LabeledBox[]; res?: { w: number; h: number }; title: string };
 
 // Upstash 무료 플랜 명령 수(월 50만)를 아끼기 위해 15초 간격, 탭이 숨겨지면 멈춤
@@ -170,13 +170,25 @@ export default function Dashboard() {
                     <td>{e.duration || "-"}</td>
                     <td className="muted small">{e.cameraTime}</td>
                     <td>
-                      {e.snapId ? (
-                        <button className="link" onClick={() => openSnap(e, `${e.deviceName} ${e.area ?? ""} ${e.index ?? ""}`)}>
-                          보기
-                        </button>
-                      ) : (
-                        "-"
-                      )}
+                      {(() => {
+                        const dev = data.devices.find((x) => x.id === e.deviceId);
+                        const title = `${e.deviceName} ${e.area ?? ""} ${e.index ?? ""}`;
+                        if (e.reportType === "alarm" && e.snapId)
+                          return (
+                            <button className="link" onClick={() => openSnap(e, title)}>
+                              보기
+                            </button>
+                          );
+                        if (e.reportType !== "trigger" || !dev?.lastSnapId) return "-";
+                        return (
+                          <button
+                            className="link"
+                            onClick={() => openSnap(fullSnapView(dev, `${e.area}#${e.index}`, e), `${title} · 사진 ${fmt(dev.lastSnapAt)}`)}
+                          >
+                            보기
+                          </button>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}
@@ -260,22 +272,14 @@ function DeviceCard({
       )}
       <p className="muted small">
         주기 리포트: {d.lastIntervalAt ? `${fmt(d.lastIntervalAt)} (${ago(d.lastIntervalAt, now)})` : "수신 없음"}
-        {(d.lastSnapId || d.intervalSnapId) && (
+        {d.lastSnapId && (
           <>
             {" · "}
             <button
               className="link"
               onClick={() => {
-                // 지금 점유 중인 모든 면의 노란 박스를 한 장에 표시
-                const occ = spotGroups.flatMap((g) => g.spots).filter((x) => x.occupied === true && x.box);
-                openSnap(
-                  {
-                    snapId: d.lastSnapId || d.intervalSnapId,
-                    boxes: occ.map((x) => ({ box: x.box!, label: `${x.area}-${x.index}` })),
-                    res: occ.find((x) => x.res)?.res,
-                  },
-                  `${d.deviceName} 최근 전체 화면 · 점유 ${occ.length}면`
-                );
+                const v = fullSnapView(d);
+                openSnap(v, `${d.deviceName} 최근 전체 화면 · 점유 ${v.boxes.length}면 · 사진 ${fmt(d.lastSnapAt)}`);
               }}
             >
               전체 스냅샷 보기
@@ -338,16 +342,8 @@ function DeviceCard({
                     <button
                       key={s.key}
                       className={`spot ${cls} ${alarmKeys.has(s.key) ? "alarm" : ""}`}
-                      data-click={s.snapId || d.lastSnapId ? "1" : "0"}
-                      // 스냅샷은 몇 분에 한 장만 저장하므로, 이 면의 사진이 없으면 최근 전체 화면을 보여줌
-                      onClick={() =>
-                        s.snapId
-                          ? openSnap(s, `${s.area} ${s.index}`)
-                          : openSnap(
-                              { snapId: d.lastSnapId, box: s.box, res: s.res },
-                              `${s.area} ${s.index} (최근 전체 화면)`
-                            )
-                      }
+                      data-click={d.lastSnapId ? "1" : "0"}
+                      onClick={() => openSnap(fullSnapView(d, s.key, s), `${s.area} ${s.index} · 사진 ${fmt(d.lastSnapAt)}`)}
                       title={`카메라 시각 ${s.cameraTime}`}
                     >
                       <div className="no">{s.index}</div>
@@ -454,6 +450,20 @@ function buildSpotGroups(d: Device): SpotGroup[] {
     }));
 }
 
+/** 최신 전체 화면에 지금 점유 중인 면을 노란 박스로 표시한다. 선택한 면이 있으면 그 면만 빨간 박스 */
+function fullSnapView(
+  d: Device,
+  focusKey?: string,
+  focus?: { area?: string; index?: string; box?: Box; res?: { w: number; h: number } }
+) {
+  const occ = buildSpotGroups(d)
+    .flatMap((g) => g.spots)
+    .filter((x) => x.occupied === true && x.box && x.key !== focusKey);
+  const boxes: LabeledBox[] = occ.map((x) => ({ box: x.box!, label: `${x.area}-${x.index}` }));
+  if (focus?.box) boxes.push({ box: focus.box, label: `${focus.area}-${focus.index}`, focus: true });
+  return { snapId: d.lastSnapId, boxes, res: focus?.res ?? occ.find((x) => x.res)?.res };
+}
+
 function buildAreaStats(groups: SpotGroup[]): AreaStat[] {
   return groups.map((g) => ({
     name: g.area || "?",
@@ -504,7 +514,7 @@ function SnapshotModal({ v, onClose }: { v: SnapView; onClose: () => void }) {
           )}
           {res && (v.box || v.boxes?.length) && (
             <svg viewBox={`0 0 ${res.w} ${res.h}`} preserveAspectRatio="none">
-              {[...(v.box ? [{ box: v.box, label: "" }] : []), ...(v.boxes ?? [])].map(({ box, label }, i) => (
+              {[...(v.box ? [{ box: v.box, label: "", focus: true }] : []), ...(v.boxes ?? [])].map(({ box, label, focus }, i) => (
                 <g key={i}>
                   <rect
                     x={box.x1}
@@ -512,14 +522,14 @@ function SnapshotModal({ v, onClose }: { v: SnapView; onClose: () => void }) {
                     width={box.x2 - box.x1}
                     height={box.y2 - box.y1}
                     fill="none"
-                    stroke="#ffcc00"
+                    stroke={focus ? "#ff2020" : "#ffcc00"}
                     strokeWidth={Math.max(2, res.w / 300)}
                   />
                   {label && (
                     <text
                       x={box.x1}
                       y={Math.max(res.h / 30, box.y1 - res.h / 120)}
-                      fill="#ffcc00"
+                      fill={focus ? "#ff2020" : "#ffcc00"}
                       fontSize={res.h / 30}
                       fontWeight="bold"
                       stroke="#000"
