@@ -107,7 +107,7 @@ export default function Dashboard() {
   return (
     <main>
       <header>
-        <h1>주차 점유 현황2</h1>
+        <h1>주차 점유 현황3</h1>
         <span className="muted small">
           {data ? `마지막 갱신 ${fmt(data.now)} · ${POLL_MS / 1000}초마다 자동 갱신` : "불러오는 중..."}
         </span>
