@@ -43,6 +43,8 @@ const TYPE_LABEL: Record<string, string> = { interval: "주기", trigger: "변�
 
 // 서버의 DEBOUNCE_SEC 과 같은 값: 이 시간 안에 원래 상태로 되돌아간 변화는 깜빡임으로 보고 목록에서 숨김
 const DEBOUNCE_MS = 60_000;
+// 카메라에서 이 시간 동안 아무 리포트(주기·변화 모두)도 오지 않으면 연결 끊김 경고
+const OFFLINE_MS = 30 * 60_000;
 
 /** 같은 면에서 A→B→A 가 DEBOUNCE_MS 안에 일어나면 B 와 되돌아온 A 이벤트를 숨긴다 */
 function hideFlicker(events: ParkingEvent[]): ParkingEvent[] {
@@ -261,6 +263,11 @@ function DeviceCard({
           SN {d.sn || "-"} · MAC {d.mac || "-"} · 마지막 수신 {ago(d.lastSeen, now)}
         </span>
       </h2>
+      {d.lastSeen && now - new Date(d.lastSeen).getTime() > OFFLINE_MS && (
+        <div className="banner">
+          카메라와 끊어졌습니다.(30분 이상) 주차 데이터가 올바르지 않을 수 있습니다. (마지막 수신 {fmt(d.lastSeen)})
+        </div>
+      )}
 
       <div className="stats">
         <div className="stat busy">
