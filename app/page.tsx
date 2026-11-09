@@ -113,6 +113,7 @@ export default function Dashboard() {
         <h1>&lt;주차점유현황&gt;</h1>
         <span className="muted small">
           {data ? `마지막 갱신 ${fmt(data.now)} · ${POLL_MS / 1000}초마다 자동 갱신` : "불러오는 중..."}
+          {` (ver.${process.env.NEXT_PUBLIC_BUILD_TIME})`}
         </span>
       </header>
 
