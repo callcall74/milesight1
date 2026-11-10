@@ -49,6 +49,7 @@ export type ParkingEvent = {
   res?: { w: number; h: number };
   totalOccupied?: number;
   totalAvailable?: number;
+  ignored?: boolean; // 주기 리포트를 보정에 쓰지 않음 (전부 빈자리)
 };
 
 export type AreaDetail = { area_name: string; numbering_scheme: string; occupancy: string };
@@ -315,8 +316,13 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
   if (reportType === "interval") {
     const occ = num(p.total_occupied);
     const avail = num(p.total_available);
-    device.totalOccupied = occ === null ? "" : String(occ);
-    device.totalAvailable = avail === null ? "" : String(avail);
+    // 카메라에서 주차면을 수정하면 점유 0(전부 빈자리) 주기 리포트가 오고 곧바로 변화 리포트가 다시 온다.
+    // 실제 상태가 아니므로 점유 0 리포트는 합계/주기 보정에 쓰지 않음 (구역/번호 체계는 반영)
+    const ignored = occ === 0;
+    if (!ignored) {
+      device.totalOccupied = occ === null ? "" : String(occ);
+      device.totalAvailable = avail === null ? "" : String(avail);
+    }
     device.lastIntervalAt = now;
     device.areas = JSON.stringify(parseAreas(p.parking_detail));
     // 구역별 번호 체계가 바뀌면(구역을 다시 그림) 그 시각을 남겨, 이전 변화 리포트는 화면에서 미확인 처리
@@ -341,19 +347,22 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
         }
       if (dirty) device.areaChangedAt = JSON.stringify(changed);
     }
-    const corrections = await applyIntervalVacant(
-      deviceId,
-      s(p.device_name),
-      prevSpots,
-      parseAreas(p.parking_detail),
-      occ,
-      parseList<Record<string, string>>([device.areaChangedAt || prevDev.areaChangedAt || "{}"])[0] ?? {},
-      s(p.time),
-      now
-    );
+    const corrections = ignored
+      ? []
+      : await applyIntervalVacant(
+          deviceId,
+          s(p.device_name),
+          prevSpots,
+          parseAreas(p.parking_detail),
+          occ,
+          parseList<Record<string, string>>([device.areaChangedAt || prevDev.areaChangedAt || "{}"])[0] ?? {},
+          s(p.time),
+          now
+        );
     for (const c of corrections) await store.lpushTrim("events", JSON.stringify(c), MAX_EVENTS);
     ev.totalOccupied = occ ?? undefined;
     ev.totalAvailable = avail ?? undefined;
+    if (ignored) ev.ignored = true;
   } else if (reportType === "trigger" || reportType === "alarm") {
     const box = parseBox(p);
     const res = parseRes(p);

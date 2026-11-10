@@ -168,7 +168,7 @@ export default function Dashboard() {
                       {e.reportType === "trigger" || e.reportType === "correction" || e.reportType === "manual"
                         ? occLabel(e.occupied, e.occupancy)
                         : e.reportType === "interval"
-                          ? `점유 ${e.totalOccupied ?? "?"} · 빈자리 ${e.totalAvailable ?? "?"}`
+                          ? `점유 ${e.totalOccupied ?? "?"} · 빈자리 ${e.totalAvailable ?? "?"}${e.ignored ? " (무시)" : ""}`
                           : "시간 초과"}
                     </td>
                     <td>{e.duration || "-"}</td>
