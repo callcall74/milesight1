@@ -43,6 +43,9 @@ export async function POST(req: NextRequest) {
   try {
     await logRaw(contentType, body, parsed);
     if (!parsed) return NextResponse.json({ ok: false, error: "not json" });
+    // 시리얼/MAC/이름이 모두 없으면 어느 카메라인지 알 수 없어 "unknown" 장치가 생기므로 원본만 기록하고 무시
+    if (!["sn", "mac_address", "device_name"].some((k) => String(parsed[k] ?? "").trim()))
+      return NextResponse.json({ ok: false, error: "no device id" });
     const ev = await ingest(parsed);
     return NextResponse.json({ ok: true, id: ev.id });
   } catch (e) {
