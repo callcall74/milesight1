@@ -424,6 +424,7 @@ export async function ingest(p: Payload): Promise<ParkingEvent> {
   await store.sadd("devices", deviceId);
   await store.hset(`dev:${deviceId}`, device);
   await store.lpushTrim("events", JSON.stringify(ev), MAX_EVENTS);
+  clearStatusCache();
   return ev;
 }
 
@@ -469,6 +470,7 @@ export async function setSpotManually(deviceId: string, area: string, index: str
     receivedAt: now,
   };
   await store.lpushTrim("events", JSON.stringify(ev), MAX_EVENTS);
+  clearStatusCache();
   return true;
 }
 
@@ -484,7 +486,22 @@ const parseList = <T,>(rows: string[]): T[] =>
 const bySpot = (a: Spot, b: Spot) =>
   a.area.localeCompare(b.area) || a.index.localeCompare(b.index, undefined, { numeric: true });
 
-export async function getStatus(eventLimit = 100) {
+// 창을 여러 개 열어도 Upstash 조회는 STATUS_CACHE_MS 에 한 번만 (명령 수 절약).
+// 이 서버에서 리포트를 받거나 면을 수정하면 바로 비워서 다음 조회에 반영
+const STATUS_CACHE_MS = 10_000;
+let statusCache: { at: number; value: Promise<Awaited<ReturnType<typeof readStatus>>> } | undefined;
+const clearStatusCache = () => (statusCache = undefined);
+
+export function getStatus() {
+  if (!statusCache || Date.now() - statusCache.at > STATUS_CACHE_MS) {
+    const value = readStatus();
+    statusCache = { at: Date.now(), value };
+    value.catch(clearStatusCache);
+  }
+  return statusCache.value;
+}
+
+async function readStatus(eventLimit = 100) {
   const store = kv();
   const ids = await store.smembers("devices");
   const devices: Device[] = await Promise.all(

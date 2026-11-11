@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Box, Device, ParkingEvent, Spot } from "@/lib/parking";
 import { splitList } from "@/lib/list";
 
@@ -15,8 +15,8 @@ type Status = {
 type LabeledBox = { box: Box; label: string; focus?: boolean };
 type SnapView = { snapId: string; box?: Box; boxes?: LabeledBox[]; res?: { w: number; h: number }; title: string };
 
-// Upstash 무료 플랜 명령 수(월 50만)를 아끼기 위해 15초 간격, 탭이 숨겨지면 멈춤
-const POLL_MS = 15000;
+// Upstash 무료 플랜 명령 수(월 50만)를 아끼기 위해 5분 간격, 탭이 숨겨지면 멈춤. 필요하면 "지금 갱신" 버튼
+const POLL_MS = 300_000;
 
 function fmt(iso: string) {
   if (!iso) return "-";
@@ -76,8 +76,12 @@ export default function Dashboard() {
   const [error, setError] = useState("");
   const [snap, setSnap] = useState<SnapView | null>(null);
   const [now, setNow] = useState(Date.now());
+  const [loading, setLoading] = useState(false);
+  const loadedAt = useRef(0);
 
   const load = useCallback(async () => {
+    loadedAt.current = Date.now();
+    setLoading(true);
     try {
       const r = await fetch("/api/status", { cache: "no-store" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -86,6 +90,7 @@ export default function Dashboard() {
     } catch (e) {
       setError(String(e));
     }
+    setLoading(false);
     setNow(Date.now());
   }, []);
 
@@ -94,7 +99,8 @@ export default function Dashboard() {
     const t = setInterval(() => {
       if (!document.hidden) load();
     }, POLL_MS);
-    const onVisible = () => !document.hidden && load();
+    // 탭으로 돌아왔을 때는 갱신한 지 POLL_MS 가 지났을 때만 바로 갱신
+    const onVisible = () => !document.hidden && Date.now() - loadedAt.current >= POLL_MS && load();
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       clearInterval(t);
@@ -112,7 +118,10 @@ export default function Dashboard() {
       <header>
         <h1>&lt;주차점유현황&gt;</h1>
         <span className="muted small">
-          {data ? `마지막 갱신 ${fmt(data.now)} · ${POLL_MS / 1000}초마다 자동 갱신` : "불러오는 중..."}
+          {data ? `마지막 갱신 ${fmt(data.now)} · ${POLL_MS / 60_000}분마다 자동 갱신` : "불러오는 중..."}{" "}
+          <button className="refresh" onClick={load} disabled={loading}>
+            {loading ? "갱신 중..." : "지금 갱신"}
+          </button>
           {` (ver.${process.env.NEXT_PUBLIC_BUILD_TIME})`}
         </span>
       </header>
